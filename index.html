@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FantastiCut</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Fantasti<span>Cut</span></h1>
+    <p class="sub">Connection test: USCutter MH 871</p>
+  </header>
+
+  <main>
+    <p id="support" class="note"></p>
+
+    <section class="card">
+      <h2>1. Find the cutter</h2>
+      <p>Turn the cutter on, plug it in, then click below. If the cutter shows up in the list Chrome opens, FantastiCut can talk to it.</p>
+      <button id="choose">Find cutter</button>
+    </section>
+
+    <section class="card">
+      <h2>2. Connect</h2>
+      <label>Baud rate
+        <select id="baud">
+          <option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option>
+        </select>
+      </label>
+      <button id="open" disabled>Connect</button>
+      <button id="close" disabled class="ghost">Disconnect</button>
+    </section>
+
+    <section class="card">
+      <h2>3. Test cut</h2>
+      <p>Cuts a 1-inch square, half an inch from the blade's start point. Load scrap vinyl first.</p>
+      <label>Speed <input id="speed" type="number" value="20" min="1" max="80"></label>
+      <label>Force <input id="force" type="number" value="80" min="10" max="500"></label>
+      <button id="cut" disabled>Cut test square</button>
+    </section>
+
+    <section class="card">
+      <h2>Log</h2>
+      <pre id="log"></pre>
+      <button id="copy" class="ghost">Copy log</button>
+    </section>
+  </main>
+
+  <footer>From <strong>EMFDPRODCO</strong></footer>
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
