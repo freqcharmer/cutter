@@ -1,6 +1,7 @@
 // The editor canvas: roll view, rendering, selection, move / scale / rotate, pan and zoom.
 import { objMatrix, apply, mul, rotate, invert, insidePaths, distToPaths, bbox } from './geom.js';
 import { worldPaths, groupBox, localBox } from './doc.js';
+import { nearestOnNodes, moveHandle, refresh, segCount } from './nodes.js';
 
 const RULER = 24;
 const HANDLE = 5;
@@ -29,6 +30,14 @@ export class View {
     this.followers = () => [];    // objects that move along with the selection (linked offsets)
     this.longPress = 0;
     this.spaceDown = false; this.tool = 'select';
+    // Node editing: { id, sel: Set('path:node'), fit: [nodes per path, for paths that don't store them yet] }
+    this.nodeEdit = null;
+    this.onNodeEnter = () => {};  // (object) double-click asks to edit nodes
+    this.onNodeExit = () => {};
+    this.onNodeBegin = () => true; // called before the first change of a drag (makes the object editable)
+    this.onNodeOp = () => {};      // (op, hit) for double-click actions
+    this.overlay = null;           // optional extra drawing: (g, view) => {} (trace preview)
+    this.lastTap = null;
     this.resize();
     new ResizeObserver(() => { this.resize(); }).observe(canvas.parentElement);
     canvas.addEventListener('pointerdown', (e) => this.down(e));
@@ -148,6 +157,11 @@ export class View {
       g.stroke(p2);
     }
 
+    if (this.overlay) this.overlay(g, this, C);
+
+    // node editing
+    if (this.nodeEdit) { this.drawNodes(g, C); this.drawRulers(C); return; }
+
     // selection
     const sel = this.doc.selected();
     if (sel.length) {
@@ -183,7 +197,7 @@ export class View {
     g.fillStyle = C.panel; g.fillRect(0, 0, this.w, RULER); g.fillRect(0, 0, RULER, this.h);
     g.strokeStyle = C.line; g.lineWidth = 1;
     g.beginPath(); g.moveTo(0, RULER + 0.5); g.lineTo(this.w, RULER + 0.5); g.moveTo(RULER + 0.5, 0); g.lineTo(RULER + 0.5, this.h); g.stroke();
-    g.fillStyle = C.dim; g.font = '10px system-ui, sans-serif'; g.textBaseline = 'top';
+    g.fillStyle = C.dim; g.font = '11px Outfit, system-ui, sans-serif'; g.textBaseline = 'top';
     const unit = metric ? 1 / 25.4 : 1;               // inches per ruler unit
     const pxPer = z * unit;
     const steps = metric ? [1, 5, 10, 50, 100, 500, 1000] : [1 / 8, 1 / 4, 1 / 2, 1, 2, 6, 12, 24, 48];
@@ -289,6 +303,15 @@ export class View {
         this.redraw();
       }, 550);
     }
+    // Double-click / double-tap (detected here so mouse, pen, and touch all work the same)
+    const now = performance.now();
+    const dbl = !!this.lastTap && now - this.lastTap.t < 380 && Math.hypot(sp[0] - this.lastTap.sp[0], sp[1] - this.lastTap.sp[1]) < 12;
+    this.lastTap = dbl ? null : { t: now, sp };
+    if (this.nodeEdit && this.nodeDown(e, sp, touch, dbl)) { this.redraw(); return; }
+    if (!this.nodeEdit && dbl) {
+      const o = this.hitObject(sp);
+      if (o) { this.drag = null; this.onNodeEnter(o); this.redraw(); return; }
+    }
     const h = this.hitHandle(sp, touch);
     const start = { sp, wp: this.toWorld(...sp), objs: this.doc.selected().map((o) => structuredClone(o)) };
     if (h) {
@@ -315,6 +338,13 @@ export class View {
     const wp = this.toWorld(...sp);
     this.onCursor(wp);
     const d = this.drag;
+    if (!d && this.nodeEdit) {
+      const h = this.hitNodes(sp, e.pointerType === 'touch');
+      this.c.style.cursor = this.spaceDown || this.tool === 'pan' ? 'grab' : h ? (h.kind === 'seg' ? 'copy' : 'pointer') : 'default';
+      const hv = h && h.kind !== 'seg' ? h.pi + ':' + h.ni + (h.which || '') : null;
+      if (hv !== this.nodeEdit.hover) { this.nodeEdit.hover = hv; this.redraw(); }
+      return;
+    }
     if (!d) {
       const touch = e.pointerType === 'touch';
       const h = this.hitHandle(sp, touch);
@@ -338,8 +368,9 @@ export class View {
       d.panned = true;
       this.ox = d.ox + sp[0] - d.s0[0]; this.oy = d.oy + sp[1] - d.s0[1]; this.redraw(); return;
     }
-    if (d.type === 'marquee' && Math.hypot(sp[0] - d.a[0], sp[1] - d.a[1]) > 8) clearTimeout(this.longPress);
-    if (d.type === 'marquee') { d.b = sp; this.redraw(); return; }
+    if ((d.type === 'marquee' || d.type === 'nodemarquee') && Math.hypot(sp[0] - d.a[0], sp[1] - d.a[1]) > 8) clearTimeout(this.longPress);
+    if (d.type === 'marquee' || d.type === 'nodemarquee') { d.b = sp; this.redraw(); return; }
+    if (d.type === 'nodes' || d.type === 'handle') { this.nodeMove(e, d, sp, wp); return; }
 
     if (!d.moved && Math.hypot(sp[0] - d.sp[0], sp[1] - d.sp[1]) < (e.pointerType === 'mouse' ? 3 : 8)) return;
     d.moved = true;
@@ -429,6 +460,24 @@ export class View {
       if (d.menu && !d.panned && e.type === 'pointerup') this.onContext({ sp: d.s0, wp: this.toWorld(...d.s0), client: d.client });
       return;
     }
+    if (d.type === 'nodemarquee') {
+      const [ax, ay] = this.toWorld(...d.a), [bx, by] = this.toWorld(...d.b);
+      const x0 = Math.min(ax, bx), x1 = Math.max(ax, bx), y0 = Math.min(ay, by), y1 = Math.max(ay, by);
+      const o = this.nodeObj();
+      if (o && (x1 - x0 > 2 / this.zoom || y1 - y0 > 2 / this.zoom)) {
+        const M = objMatrix(o);
+        this.nodePaths(o).forEach((nodes, pi) => nodes.forEach((n, ni) => {
+          const [x, y] = apply(M, n.p);
+          if (x >= x0 && x <= x1 && y >= y0 && y <= y1) this.nodeEdit.sel.add(pi + ':' + ni);
+        }));
+      }
+      this.onSelect(); this.redraw();
+      return;
+    }
+    if (d.type === 'nodes' || d.type === 'handle') {
+      if (d.moved) this.onCommit(d.type === 'handle' ? 'Edit curve' : this.nodeEdit?.sel.size > 1 ? 'Move nodes' : 'Move node');
+      return;
+    }
     if (d.type === 'marquee') {
       const [ax, ay] = this.toWorld(...d.a), [bx, by] = this.toWorld(...d.b);
       const x0 = Math.min(ax, bx), x1 = Math.max(ax, bx), y0 = Math.min(ay, by), y1 = Math.max(ay, by);
@@ -444,6 +493,150 @@ export class View {
       return;
     }
     if (d.moved) this.onCommit({ move: 'Move', rotate: 'Rotate', scale: 'Resize' }[d.type] || 'Edit');
+  }
+
+  // ---------- node editing ----------
+  nodeObj() { return this.nodeEdit ? this.doc.get(this.nodeEdit.id) : null; }
+  /** Node lists for each path of o (stored nodes, or the fitted preview for paths without them). */
+  nodePaths(o = this.nodeObj()) {
+    if (!o) return [];
+    return o.paths.map((p, pi) => p.nodes || this.nodeEdit.fit?.[pi] || []);
+  }
+  /** Handles shown: those of the selected nodes, plus the neighbors' handles that face them. */
+  visibleHandles(o = this.nodeObj()) {
+    const out = [], seen = new Set(), all = this.nodePaths(o);
+    const add = (pi, ni, which) => {
+      const n = all[pi]?.[ni], k = pi + ':' + ni + which;
+      if (n && n[which] && !seen.has(k)) { seen.add(k); out.push({ pi, ni, which, n }); }
+    };
+    for (const key of this.nodeEdit.sel) {
+      const [pi, ni] = key.split(':').map(Number), nodes = all[pi];
+      if (!nodes?.[ni]) continue;
+      const closed = o.paths[pi].closed, L = nodes.length;
+      add(pi, ni, 'i'); add(pi, ni, 'o');
+      if (ni > 0 || closed) add(pi, (ni - 1 + L) % L, 'o');
+      if (ni < L - 1 || closed) add(pi, (ni + 1) % L, 'i');
+    }
+    return out;
+  }
+  /** What is under a screen point in node mode: a handle, a node, or a segment (with k, t). */
+  hitNodes(sp, touch) {
+    const o = this.nodeObj();
+    if (!o) return null;
+    const M = objMatrix(o), r = touch ? 16 : 8;
+    const S = (p) => this.toScreen(apply(M, p));
+    let best = null, bd = r;
+    for (const h of this.visibleHandles(o)) {
+      const q = S(h.n[h.which]), d = Math.hypot(q[0] - sp[0], q[1] - sp[1]);
+      if (d <= bd) { bd = d; best = { kind: 'handle', pi: h.pi, ni: h.ni, which: h.which }; }
+    }
+    if (best) return best;
+    this.nodePaths(o).forEach((nodes, pi) => nodes.forEach((n, ni) => {
+      const q = S(n.p), d = Math.hypot(q[0] - sp[0], q[1] - sp[1]);
+      if (d <= bd) { bd = d; best = { kind: 'node', pi, ni }; }
+    }));
+    if (best) return best;
+    const Mi = invert(M), q = apply(Mi, this.toWorld(...sp));
+    const scale = Math.sqrt(Math.abs(M[0] * M[3] - M[1] * M[2])) || 1, tol = r / this.zoom / scale;
+    this.nodePaths(o).forEach((nodes, pi) => {
+      if (nodes.length < 2) return;
+      const hit = nearestOnNodes(nodes, o.paths[pi].closed, q);
+      if (hit.d <= tol && (!best || hit.d < best.d)) best = { kind: 'seg', pi, k: hit.k, t: hit.t, d: hit.d };
+    });
+    return best;
+  }
+  nodeDown(e, sp, touch, dbl) {
+    const o = this.nodeObj();
+    if (!o) { this.onNodeExit(); return false; }
+    const h = this.hitNodes(sp, touch), ne = this.nodeEdit;
+    if (dbl) {
+      if (h?.kind === 'seg' || h?.kind === 'node') { this.drag = null; this.onNodeOp(h.kind === 'seg' ? 'insert' : 'toggle', h); return true; }
+      if (!h && this.hitObject(sp)?.id !== o.id) { this.drag = null; this.onNodeExit(); return true; }
+    }
+    if (h?.kind === 'handle') { this.drag = { type: 'handle', h, sp, moved: false }; return true; }
+    if (h?.kind === 'node') {
+      const key = h.pi + ':' + h.ni;
+      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+        if (ne.sel.has(key)) ne.sel.delete(key); else ne.sel.add(key);
+        this.onSelect(); return true;
+      }
+      if (!ne.sel.has(key)) ne.sel = new Set([key]);
+      const all = this.nodePaths(o);
+      const orig = [...ne.sel].map((k) => { const [pi, ni] = k.split(':').map(Number); const n = all[pi]?.[ni]; return n && { pi, ni, p: n.p.slice(), i: n.i?.slice(), o: n.o?.slice() }; }).filter(Boolean);
+      this.drag = { type: 'nodes', sp, wp: this.toWorld(...sp), moved: false, orig };
+      this.onSelect(); return true;
+    }
+    const other = this.hitObject(sp);
+    if (!h && other && other.id !== o.id) { this.onNodeExit(); return false; }
+    if (!e.shiftKey) ne.sel = new Set();
+    this.drag = { type: 'nodemarquee', a: sp, b: sp, additive: e.shiftKey };
+    this.onSelect(); return true;
+  }
+  nodeMove(e, d, sp, wp) {
+    if (!d.moved) {
+      if (Math.hypot(sp[0] - d.sp[0], sp[1] - d.sp[1]) < (e.pointerType === 'mouse' ? 3 : 8)) return;
+      clearTimeout(this.longPress);
+      if (!this.onNodeBegin()) { this.drag = null; return; }
+      d.moved = true;
+    }
+    const o = this.nodeObj();
+    if (!o) return;
+    const M = objMatrix(o), Mi = invert(M);
+    const touched = new Set();
+    if (d.type === 'nodes') {
+      let dx = wp[0] - d.wp[0], dy = wp[1] - d.wp[1];
+      if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
+      const lx = Mi[0] * dx + Mi[2] * dy, ly = Mi[1] * dx + Mi[3] * dy;
+      const mv = (p) => (p ? [p[0] + lx, p[1] + ly] : null);
+      for (const s0 of d.orig) {
+        const n = o.paths[s0.pi]?.nodes?.[s0.ni];
+        if (!n) continue;
+        n.p = mv(s0.p); n.i = mv(s0.i); n.o = mv(s0.o);
+        touched.add(s0.pi);
+      }
+    } else {
+      const n = o.paths[d.h.pi]?.nodes?.[d.h.ni];
+      if (n) { moveHandle(n, d.h.which, apply(Mi, wp), e.altKey); touched.add(d.h.pi); }
+    }
+    for (const pi of touched) refresh(o.paths[pi]);
+    this.onSelect(true);
+    this.redraw();
+  }
+  drawNodes(g, C) {
+    const o = this.nodeObj();
+    if (!o) return;
+    const M = objMatrix(o), S = (p) => this.toScreen(apply(M, p)), ne = this.nodeEdit;
+    const all = this.nodePaths(o);
+    // outline
+    const p2 = new Path2D();
+    for (const p of worldPaths(o)) { p.pts.forEach((pt, i) => { const [x, y] = this.toScreen(pt); i ? p2.lineTo(x, y) : p2.moveTo(x, y); }); if (p.closed) p2.closePath(); }
+    g.strokeStyle = C.accent; g.lineWidth = 1.6; g.stroke(p2);
+    // handles
+    g.lineWidth = 1;
+    for (const h of this.visibleHandles(o)) {
+      const a = S(h.n.p), b = S(h.n[h.which]);
+      g.strokeStyle = C.dim; g.beginPath(); g.moveTo(...a); g.lineTo(...b); g.stroke();
+      const hov = ne.hover === h.pi + ':' + h.ni + h.which;
+      g.fillStyle = hov ? C.accent : C.bg; g.strokeStyle = C.accent;
+      g.beginPath(); g.arc(b[0], b[1], hov ? 5 : 4, 0, Math.PI * 2); g.fill(); g.stroke();
+    }
+    // nodes: square = corner, circle = smooth, diamond = symmetric
+    all.forEach((nodes, pi) => nodes.forEach((n, ni) => {
+      const [x, y] = S(n.p), key = pi + ':' + ni, sel = ne.sel.has(key), hov = ne.hover === key, r = hov ? 6 : 5;
+      g.fillStyle = sel ? C.accent : C.bg; g.strokeStyle = sel ? C.text : C.accent; g.lineWidth = 1.5;
+      g.beginPath();
+      if (n.t === 's') g.arc(x, y, r, 0, Math.PI * 2);
+      else if (n.t === 'y') { g.moveTo(x, y - r - 1); g.lineTo(x + r + 1, y); g.lineTo(x, y + r + 1); g.lineTo(x - r - 1, y); g.closePath(); }
+      else g.rect(x - r + 0.5, y - r + 0.5, r * 2 - 1, r * 2 - 1);
+      g.fill(); g.stroke();
+      // open path ends get a small ring so Join targets are easy to see
+      if (!o.paths[pi].closed && (ni === 0 || ni === nodes.length - 1)) { g.beginPath(); g.arc(x, y, r + 4, 0, Math.PI * 2); g.strokeStyle = C.dim; g.lineWidth = 1; g.stroke(); }
+    }));
+    const d = this.drag;
+    if (d?.type === 'nodemarquee') {
+      g.fillStyle = 'rgba(88,164,176,0.12)'; g.strokeStyle = C.accent; g.lineWidth = 1;
+      g.fillRect(d.a[0], d.a[1], d.b[0] - d.a[0], d.b[1] - d.a[1]); g.strokeRect(d.a[0], d.a[1], d.b[0] - d.a[0], d.b[1] - d.a[1]);
+    }
   }
 
   wheel(e) {

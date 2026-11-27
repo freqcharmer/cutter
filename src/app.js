@@ -3,6 +3,7 @@ import { Doc, newId, worldPaths, worldBox, groupBox, localBox } from './doc.js';
 import { View } from './view.js';
 import { center, objMatrix, apply, bbox, pointInPoly, signedArea, round, mul, invert, translate, transformPaths } from './geom.js';
 import { weld as weldPaths, offset as offsetPaths } from './clip.js';
+import { fitNodes, refresh, insertNode, setType, setSegment, breakAt, joinEnds, classify } from './nodes.js';
 import { lsGet, lsSet } from './store.js';
 import { parseSVG } from './import-svg.js';
 import { parseDXF } from './import-dxf.js';
@@ -37,6 +38,7 @@ function toast(msg, { error = false, ms = 4200 } = {}) {
   el.className = 'toast' + (error ? ' err' : '');
   el.textContent = msg;
   $('toasts').append(el);
+  while ($('toasts').children.length > 3) $('toasts').firstChild.remove(); // keep the newest three
   setTimeout(() => el.remove(), ms);
   if (error) log('ERROR: ' + msg);
 }
@@ -266,9 +268,17 @@ function refreshPanels(liveOnly = false) {
   $('p-none').hidden = sel.length > 0;
   $('p-sel').hidden = sel.length === 0;
   const one = sel.length === 1 ? sel[0] : null;
-  $('p-text').hidden = !(one && one.kind === 'text');
-  $('p-trace').hidden = !(one && one.kind === 'trace');
-  $('p-offset').hidden = !(one && one.kind === 'offset' && one.offset?.linked);
+  const ne = view.nodeEdit;
+  $('p-nodes').hidden = !ne;
+  if (ne) {
+    $('p-sel').hidden = true;
+    const lists = view.nodePaths();
+    const total = lists.reduce((a, l) => a + l.length, 0);
+    $('n-info').textContent = `${total} node${total === 1 ? '' : 's'} in ${lists.length} path${lists.length === 1 ? '' : 's'} · ${ne.sel.size} picked`;
+  }
+  $('p-text').hidden = !!ne || !(one && one.kind === 'text');
+  $('p-trace').hidden = !!ne || !(one && one.kind === 'trace');
+  $('p-offset').hidden = !!ne || !(one && one.kind === 'offset' && one.offset?.linked);
   $('f-width').textContent = fmtU(settings.cutWidth);
   $('f-count').textContent = doc.objects.length;
   const all = groupBox(doc.objects);
@@ -289,6 +299,8 @@ function refreshPanels(liveOnly = false) {
     $('in-rot').disabled = !one;
     $('align-row').hidden = sel.length < 2;
     $('b-ungroup').disabled = !(one && one.paths.length > 1);
+    $('b-combine').disabled = sel.length < 2;
+    $('b-nodes').disabled = !one;
     $('st-sel').textContent = `${sel.length} selected · ${fmtU(b.w)} × ${fmtU(b.h)}`;
   } else $('st-sel').textContent = '';
 
@@ -729,10 +741,220 @@ function doRepeat() {
   toast(`${rows * cols} copies, ${fmtU(p.w)} × ${fmtU(p.h)}, using about ${fmtU(b.x + p.w + settings.margin)} of vinyl.`);
 }
 
+
+// ---------- node editing ----------
+const plainShape = (o) => o.kind === 'shape' && !o.weld;
+let simplifyBase = null; // paths before the Simplify slider moved
+
+/** Starts node editing on an object (double-click, menu, or the Edit nodes button). */
+function enterNodes(o) {
+  if (!o || !o.paths.length) return;
+  closeMenu();
+  doc.select([o.id]);
+  view.nodeEdit = { id: o.id, sel: new Set(), fit: [], ready: false, hover: null };
+  syncNodeEdit();
+  simplifyBase = null; $('n-simp').value = 0;
+  const what = o.kind === 'text' ? 'text (it becomes shapes)' : o.kind === 'trace' ? 'traced image (its trace settings go away)' : o.weld ? 'weld (Unweld stops working)' : o.kind === 'offset' && o.offset?.linked ? 'border (it unlinks from the original)' : '';
+  toast(what ? `Editing nodes. Your first change converts this ${what}; Undo brings it back.` : 'Editing nodes. Drag nodes and handles; double-click a line to add a node. Esc or Done when finished.', { ms: 5000 });
+  refreshPanels(); view.redraw();
+}
+function exitNodes() {
+  if (!view.nodeEdit) return;
+  view.nodeEdit = null; simplifyBase = null;
+  refreshPanels(); view.redraw();
+}
+/** Keeps node mode matched to the document (after undo, redo, or other changes). */
+function syncNodeEdit() {
+  const ne = view.nodeEdit;
+  if (!ne) return;
+  const o = doc.get(ne.id);
+  if (!o || !o.paths.length) { exitNodes(); return; }
+  ne.ready = plainShape(o) && o.paths.every((p) => p.nodes);
+  if (!ne.ready) ne.fit = o.paths.map((p, i) => (p.nodes ? null : (ne.fit?.[i]?.src === p.pts ? ne.fit[i] : Object.assign(fitNodes(p.pts, p.closed), { src: p.pts }))));
+  const lists = view.nodePaths(o);
+  for (const key of [...ne.sel]) { const [pi, ni] = key.split(':').map(Number); if (!lists[pi]?.[ni]) ne.sel.delete(key); }
+  if (!doc.selection.has(o.id) || doc.selection.size !== 1) doc.selection = new Set([o.id]);
+}
+/** Makes the object editable before its first node change: converts text, traces, welds, and borders. */
+function nodeBegin() {
+  const ne = view.nodeEdit, o = ne && doc.get(ne.id);
+  if (!o) return false;
+  if (ne.ready) return true;
+  const said = [];
+  if (o.kind === 'text') { o.kind = 'shape'; delete o.text; said.push('The text is shapes now.'); }
+  if (o.kind === 'trace') { o.kind = 'shape'; delete o.trace; view.images.delete(o.id); said.push('The trace settings are gone.'); }
+  if (o.weld) { delete o.weld; said.push('The weld is baked in (Unweld no longer applies).'); }
+  if (o.kind === 'offset') { o.kind = 'shape'; delete o.offset; delete o.empty; said.push('The border is unlinked from its original.'); }
+  o.paths.forEach((p, i) => { if (!p.nodes) { p.nodes = (ne.fit[i] || fitNodes(p.pts, p.closed)).map((n) => ({ p: n.p, i: n.i, o: n.o, t: n.t })); } });
+  ne.fit = []; ne.ready = true;
+  if (said.length) toast(`${said.join(' ')} Undo (Ctrl+Z) brings it back.`, { ms: 6000 });
+  return true;
+}
+/** Keeps the object's local geometry centered after node edits, then records the undo step. */
+function nodeCommit(label) {
+  const o = view.nodeEdit && doc.get(view.nodeEdit.id);
+  if (o) { o.cx = 0; o.cy = 0; setSource(o, o.paths); }
+  doc.commit(label);
+}
+const nodeSel = () => [...(view.nodeEdit?.sel || [])].map((k) => k.split(':').map(Number));
+const endOf = (o, pi, ni) => { const p = o.paths[pi]; if (!p || p.closed) return null; return ni === 0 ? 'start' : ni === p.nodes.length - 1 ? 'end' : null; };
+
+/** Node commands. `hit` is what was under the pointer (for insert, toggle, and segment changes). */
+function nodeOp(op, hit) {
+  const ne = view.nodeEdit, o = ne && doc.get(ne.id);
+  if (!o) return;
+  if (op === 'selectall') { ne.sel = new Set(view.nodePaths(o).flatMap((ns, pi) => ns.map((_, ni) => pi + ':' + ni))); refreshPanels(); view.redraw(); return; }
+  if (op === 'exit') { exitNodes(); return; }
+  if (!nodeBegin()) return;
+  const sel = nodeSel();
+  const touched = new Set();
+  let label = 'Edit nodes';
+  if (op === 'insert' && hit) {
+    const p = o.paths[hit.pi], ni = insertNode(p.nodes, p.closed, hit.k, hit.t);
+    touched.add(hit.pi); ne.sel = new Set([hit.pi + ':' + ni]); label = 'Add node';
+  } else if (op === 'toggle' && hit) {
+    const p = o.paths[hit.pi], n = p.nodes[hit.ni];
+    setType(p.nodes, hit.ni, n.t === 'c' ? 's' : 'c', p.closed); touched.add(hit.pi); label = n.t === 'c' ? 'Corner node' : 'Smooth node';
+  } else if (op === 'corner' || op === 'smooth' || op === 'symmetric') {
+    if (!sel.length) { toast('Pick a node first.'); return; }
+    for (const [pi, ni] of sel) { const p = o.paths[pi]; setType(p.nodes, ni, { corner: 'c', smooth: 's', symmetric: 'y' }[op], p.closed); touched.add(pi); }
+    label = { corner: 'Corner node', smooth: 'Smooth node', symmetric: 'Symmetric node' }[op];
+  } else if (op === 'delete') {
+    if (!sel.length) { toast('Pick the nodes to delete first.'); return; }
+    const byPath = new Map();
+    for (const [pi, ni] of sel) { if (!byPath.has(pi)) byPath.set(pi, []); byPath.get(pi).push(ni); }
+    const drop = [];
+    for (const [pi, list] of byPath) {
+      const p = o.paths[pi];
+      for (const ni of list.sort((a, b) => b - a)) p.nodes.splice(ni, 1);
+      if (p.nodes.length < (p.closed ? 3 : 2) && !(p.closed && p.nodes.length === 2 && p.nodes.some((n) => n.i || n.o))) drop.push(pi);
+      else touched.add(pi);
+    }
+    o.paths = o.paths.filter((_, i) => !drop.includes(i));
+    ne.sel = new Set();
+    label = sel.length > 1 ? `Delete ${sel.length} nodes` : 'Delete node';
+    if (!o.paths.length) { doc.remove([o.id]); exitNodes(); doc.commit('Delete shape'); return; }
+    for (const pi of [...touched]) { touched.delete(pi); const ni = pi - drop.filter((d) => d < pi).length; touched.add(ni); }
+  } else if (op === 'break') {
+    if (sel.length !== 1) { toast('Pick one node to break the path at.'); return; }
+    const [pi, ni] = sel[0], p = o.paths[pi];
+    if (!p.closed && (ni === 0 || ni === p.nodes.length - 1)) { toast('That is already an end of the path.'); return; }
+    const parts = breakAt(p, ni).map((q) => refresh({ ...p, nodes: q.nodes, closed: q.closed }));
+    o.paths.splice(pi, 1, ...parts);
+    ne.sel = new Set([pi + ':0']); label = 'Break path';
+  } else if (op === 'join') {
+    const ends = sel.map(([pi, ni]) => ({ pi, ni, end: endOf(o, pi, ni) })).filter((x) => x.end);
+    if (sel.length !== 2 || ends.length !== 2) { toast('Pick two open ends to join (the nodes with a ring around them).'); return; }
+    const [a, b] = ends;
+    const joined = joinEnds({ path: o.paths[a.pi], end: a.end }, { path: o.paths[b.pi], end: b.end });
+    const base = o.paths[a.pi];
+    const np = refresh({ ...base, nodes: joined.nodes, closed: joined.closed });
+    if (a.pi === b.pi) o.paths.splice(a.pi, 1, np);
+    else { o.paths = o.paths.filter((_, i) => i !== a.pi && i !== b.pi); o.paths.push(np); }
+    ne.sel = new Set(); label = a.pi === b.pi ? 'Close path' : 'Join paths';
+  } else if (op === 'close') {
+    const pis = [...new Set(sel.map(([pi]) => pi))].filter((pi) => !o.paths[pi].closed);
+    if (!pis.length) { toast('Pick a node on an open path first.'); return; }
+    for (const pi of pis) { const p = o.paths[pi]; const j = joinEnds({ path: p, end: 'start' }, { path: p, end: 'end' }); p.nodes = j.nodes; p.closed = true; touched.add(pi); }
+    ne.sel = new Set(); label = 'Close path';
+  } else if (op === 'line' || op === 'curve') {
+    const segs = [];
+    if (hit?.kind === 'seg') segs.push([hit.pi, hit.k]);
+    else {
+      const set = new Set(sel.map(([pi, ni]) => pi + ':' + ni));
+      for (const [pi, ni] of sel) {
+        const p = o.paths[pi], L = p.nodes.length, nx = (ni + 1) % L;
+        if ((ni < L - 1 || p.closed) && set.has(pi + ':' + nx)) segs.push([pi, ni]);
+      }
+    }
+    if (!segs.length) { toast('Right-click a line between nodes, or pick two nodes next to each other.'); return; }
+    for (const [pi, k] of segs) { const p = o.paths[pi]; setSegment(p.nodes, p.closed, k, op === 'curve'); touched.add(pi); }
+    label = op === 'curve' ? 'Make curve' : 'Make line';
+  } else return;
+  for (const pi of touched) if (o.paths[pi]) refresh(o.paths[pi]);
+  for (const p of o.paths) for (const n of p.nodes || []) if (n.t !== 'y' && n.t !== 's') n.t = classify(n) === 'c' ? 'c' : n.t;
+  simplifyBase = null; $('n-simp').value = 0;
+  nodeCommit(label);
+}
+
+/** Simplify slider: re-fits every path with a looser tolerance (always from the shape before the slider moved). */
+function simplifyNodes(level, final) {
+  const ne = view.nodeEdit, o = ne && doc.get(ne.id);
+  if (!o || !nodeBegin()) return;
+  if (!simplifyBase) simplifyBase = o.paths.map((p) => ({ pts: p.pts, closed: p.closed, nodes: p.nodes }));
+  const err = 0.003 + (level / 100) ** 2 * 0.03;
+  o.paths.forEach((p, i) => {
+    const b = simplifyBase[i];
+    if (!b) return;
+    if (level <= 0) { p.nodes = b.nodes; p.pts = b.pts; return; }
+    p.nodes = fitNodes(b.pts, b.closed, err);
+    refresh(p);
+  });
+  ne.sel = new Set();
+  refreshPanels(true); view.redraw();
+  if (final) { nodeCommit('Simplify'); simplifyBase = null; $('n-simp').value = 0; }
+}
+
+function nudgeNodes(dx, dy) {
+  const ne = view.nodeEdit, o = ne && doc.get(ne.id);
+  if (!o || !ne.sel.size || !nodeBegin()) return;
+  const Mi = invert(objMatrix(o)), lx = Mi[0] * dx + Mi[2] * dy, ly = Mi[1] * dx + Mi[3] * dy;
+  const mv = (p) => (p ? [p[0] + lx, p[1] + ly] : null);
+  const touched = new Set();
+  for (const [pi, ni] of nodeSel()) { const n = o.paths[pi]?.nodes?.[ni]; if (!n) continue; n.p = mv(n.p); n.i = mv(n.i); n.o = mv(n.o); touched.add(pi); }
+  for (const pi of touched) refresh(o.paths[pi]);
+  nodeCommit('Nudge nodes');
+}
+
+function nodeMenuItems(sp) {
+  const ne = view.nodeEdit, o = doc.get(ne.id);
+  const h = view.hitNodes(sp, false);
+  if (h?.kind === 'node' && !ne.sel.has(h.pi + ':' + h.ni)) ne.sel = new Set([h.pi + ':' + h.ni]);
+  const sel = nodeSel(), n = sel.length;
+  const ends = o ? sel.filter(([pi, ni]) => endOf(o, pi, ni)).length : 0;
+  const openSel = o ? sel.some(([pi]) => !o.paths[pi]?.closed) : false;
+  return [
+    ...(h?.kind === 'seg' ? [{ label: 'Add node here', kb: 'Double-click', on: () => nodeOp('insert', h) }] : []),
+    { label: n > 1 ? `Delete ${n} nodes` : 'Delete node', kb: 'Del', on: () => nodeOp('delete'), off: !n, cls: 'danger' },
+    '-',
+    { label: 'Corner', on: () => nodeOp('corner'), off: !n },
+    { label: 'Smooth', on: () => nodeOp('smooth'), off: !n },
+    { label: 'Symmetric', on: () => nodeOp('symmetric'), off: !n },
+    '-',
+    { label: 'Break path here', on: () => nodeOp('break'), off: n !== 1 },
+    { label: 'Join ends', on: () => nodeOp('join'), off: !(n === 2 && ends === 2) },
+    { label: 'Close path', on: () => nodeOp('close'), off: !openSel },
+    { label: 'Make line', on: () => nodeOp('line', h), off: !(h?.kind === 'seg' || n >= 2) },
+    { label: 'Make curve', on: () => nodeOp('curve', h), off: !(h?.kind === 'seg' || n >= 2) },
+    '-',
+    { label: 'Select all nodes', kb: 'Ctrl+A', on: () => nodeOp('selectall') },
+    { label: 'Done editing nodes', kb: 'Esc', on: exitNodes },
+  ];
+}
+
+// ---------- combine ----------
+/** Joins the selected objects into one object without welding (paths and curves stay as they are). */
+function combineSelection() {
+  const sel = doc.selected();
+  if (sel.length < 2) { toast('Select two or more objects to combine.'); return; }
+  const c = { id: newId(), kind: 'shape', name: 'Combined', x: 0, y: 0, sx: 1, sy: 1, rot: 0, color: colorKey(sel[0].color) };
+  setSource(c, sel.flatMap((o) => worldPaths(o, true).map((p) => ({ ...p, color: undefined }))));
+  c.x = c.cx; c.y = c.cy;
+  const ids = new Set(sel.map((o) => o.id));
+  for (const o of doc.objects) if (o.kind === 'offset' && o.offset?.linked && o.offset.src.some((id) => ids.has(id))) o.offset.src = [...new Set(o.offset.src.map((id) => (ids.has(id) ? c.id : id)))];
+  const idx = Math.min(...sel.map((o) => doc.objects.indexOf(o)));
+  doc.remove([...ids]);
+  doc.objects.splice(idx, 0, c);
+  doc.select([c.id]);
+  doc.commit('Combine');
+  toast(`Combined ${sel.length} objects into one${layerColors(sel).length > 1 ? `, all ${layerName(c.color)}` : ''}. Ungroup splits it again.`);
+}
+
 // ---------- right-click / long-press menu ----------
 const ctx = $('ctx');
 function closeMenu() { ctx.hidden = true; ctx.textContent = ''; }
 function openMenu({ sp, client }) {
+  if (view.nodeEdit) { showMenu(nodeMenuItems(sp), client); view.redraw(); refreshPanels(); return; }
   const hit = view.hitObject(sp);
   if (hit && !doc.selection.has(hit.id)) doc.select([hit.id]);
   if (!hit && doc.selection.size && !doc.selected().some((o) => { const b = worldBox(o); const [x, y] = view.toWorld(...sp); return b && x >= b.x && x <= b.x1 && y >= b.y && y <= b.y1; })) doc.clearSelection();
@@ -740,6 +962,8 @@ function openMenu({ sp, client }) {
   const items = sel.length ? [
     { label: sel.length > 1 ? `Weld ${sel.length} objects` : 'Weld', kb: 'Ctrl+G', on: weldSelection, off: !canWeld(sel) },
     { label: 'Unweld', kb: 'Ctrl+Shift+G', on: unweldSelection, off: !canUnweld(sel) },
+    { label: 'Edit nodes', kb: 'Double-click', on: () => enterNodes(one), off: !one },
+    { label: sel.length > 1 ? `Combine ${sel.length} objects` : 'Combine', on: combineSelection, off: sel.length < 2 },
     { label: 'Offset (border)', on: addOffset },
     ...(one?.kind === 'offset' && one.offset?.linked ? [{ label: 'Unlink border', on: () => { unlinkOffset(one); doc.commit('Unlink'); } }] : []),
     { label: 'Step and repeat…', on: openRepeat },
@@ -755,6 +979,9 @@ function openMenu({ sp, client }) {
     '-',
     { label: 'Delete', kb: 'Del', on: deleteSel, cls: 'danger' },
   ] : [
+    { label: doc.undoStack.length ? `Undo ${doc.undoStack.at(-1).label}` : 'Undo', kb: 'Ctrl+Z', on: () => $('btn-undo').click(), off: !doc.undoStack.length },
+    { label: doc.redoStack.length ? `Redo ${doc.redoStack.at(-1).label}` : 'Redo', kb: 'Ctrl+Shift+Z', on: () => $('btn-redo').click(), off: !doc.redoStack.length },
+    '-',
     { label: 'Paste', kb: 'Ctrl+V', on: pasteClipboard, off: !clipboard },
     { label: 'Add text', kb: 'T', on: addText },
     { label: 'Import…', kb: 'Ctrl+I', on: () => $('file-import').click() },
@@ -763,6 +990,9 @@ function openMenu({ sp, client }) {
     { label: 'Fit design', kb: 'Shift+1', on: () => view.fitDesign() },
     { label: 'Show the roll', kb: 'Shift+0', on: () => view.fitRoll() },
   ];
+  showMenu(items, client);
+}
+function showMenu(items, client) {
   ctx.textContent = '';
   for (const it of items) {
     if (it === '-') { ctx.append(document.createElement('hr')); continue; }
@@ -1029,7 +1259,7 @@ function drawPreview(sh) {
     g.beginPath(); p.pts.forEach((pt, j) => { const [x, y] = S(pt); j ? g.lineTo(x, y) : g.moveTo(x, y); });
     if (p.closed) g.closePath();
     g.stroke(); g.lineWidth = 1;
-    if (p.kind === 'design') { num++; if (sh.stats.pieces <= 30) { g.fillStyle = '#D8DBE2'; g.font = '10px system-ui'; g.fillText(String(num), s0[0] + 3, s0[1] - 3); } }
+    if (p.kind === 'design') { num++; if (sh.stats.pieces <= 30) { g.fillStyle = '#D8DBE2'; g.font = '11px Outfit, system-ui'; g.fillText(String(num), s0[0] + 3, s0[1] - 3); } }
     pos = p.closed ? s0 : S(p.pts.at(-1));
   });
   const o = S([0, 0]);
@@ -1209,6 +1439,12 @@ $('b-ungroup').onclick = ungroup;
 $('b-weld').onclick = weldSelection;
 $('b-unweld').onclick = unweldSelection;
 $('b-offset').onclick = addOffset;
+$('b-combine').onclick = combineSelection;
+$('b-nodes').onclick = () => enterNodes(single());
+document.querySelectorAll('[data-node]').forEach((b) => { b.onclick = () => nodeOp(b.dataset.node); });
+$('n-done').onclick = exitNodes;
+$('n-simp').addEventListener('input', () => { $('n-simp-v').textContent = $('n-simp').value + '%'; simplifyNodes(+$('n-simp').value, false); });
+$('n-simp').addEventListener('change', () => { simplifyNodes(+$('n-simp').value, true); $('n-simp-v').textContent = ''; });
 $('b-repeat').onclick = openRepeat;
 $('b-back').onclick = () => {
   const sel = doc.selected(); if (!sel.length) return;
@@ -1273,13 +1509,19 @@ $('log-clear').onclick = () => { logEl.textContent = ''; };
 $('log-copy').onclick = run(async () => { await navigator.clipboard.writeText(logEl.textContent); toast('Log copied.'); });
 
 // ---------- view events ----------
-view.onCommit = (label) => doc.commit(label);
+view.onCommit = (label) => (view.nodeEdit ? nodeCommit(label) : doc.commit(label));
+view.onNodeEnter = (o) => enterNodes(o);
+view.onNodeExit = () => exitNodes();
+view.onNodeBegin = () => nodeBegin();
+view.onNodeOp = (op, hit) => nodeOp(op, hit);
 view.onContext = (e) => openMenu(e);
 view.followers = followersOf;
 view.onSelect = (live) => refreshPanels(!!live);
 view.onCursor = ([x, y]) => { $('st-cursor').textContent = `${fmt(x)}, ${fmt(y)} ${settings.units}`; };
 doc.on((why) => {
   if (why === 'saved') { $('st-saved').textContent = 'Autosaved ' + doc.lastSaved.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); return; }
+  if (why === 'load') exitNodes();
+  syncNodeEdit();
   refreshPanels(); view.redraw();
 });
 $('canvas').addEventListener('wheel', () => refreshPanels(true), { passive: true });
@@ -1310,6 +1552,14 @@ document.addEventListener('keydown', (e) => {
   if (mod && key === 'enter') { e.preventDefault(); openCut(); return; }
   if (isTyping(e.target)) return;
   if (mod && key === 'z') { e.preventDefault(); (e.shiftKey ? $('btn-redo') : $('btn-undo')).click(); return; }
+  if (view.nodeEdit && !mod) {
+    if (key === 'escape' || key === 'enter') { e.preventDefault(); if (!ctx.hidden) closeMenu(); else exitNodes(); return; }
+    if (key === 'delete' || key === 'backspace') { e.preventDefault(); nodeOp('delete'); return; }
+    const st = e.shiftKey ? 0.1 : 0.01;
+    const ar = { arrowleft: [-st, 0], arrowright: [st, 0], arrowup: [0, -st], arrowdown: [0, st] };
+    if (ar[key]) { e.preventDefault(); nudgeNodes(...ar[key]); return; }
+  }
+  if (view.nodeEdit && mod && key === 'a') { e.preventDefault(); nodeOp('selectall'); return; }
   if (mod && key === 'y') { e.preventDefault(); $('btn-redo').click(); return; }
   if (mod && key === 'd') { e.preventDefault(); duplicate(); return; }
   if (mod && key === 'g') { e.preventDefault(); if (e.shiftKey) unweldSelection(); else weldSelection(); return; }
@@ -1350,7 +1600,7 @@ window.addEventListener('beforeunload', () => { doc.saveNow(); });
 })();
 
 // For testing in the browser console.
-window.fc = { doc, view, settings: () => settings, prepareJob, planJob, BUNDLED, plan: () => currentPlan };
+window.fc = { doc, view, settings: () => settings, prepareJob, planJob, BUNDLED, plan: () => currentPlan, enterNodes, exitNodes, nodeOp };
 
 // Opening a .fcut file from Windows when FantastiCut is installed as an app.
 if ('launchQueue' in window) {

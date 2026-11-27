@@ -1,6 +1,7 @@
 // SVG import: shapes and paths → flattened paths in inches, keeping each element's color.
 import svgpath from '../vendor/svgpath.mjs';
 import { I, mul, apply, flattenCubic, flattenQuad, clean, TOL } from './geom.js';
+import { cleanNodes } from './nodes.js';
 
 const UNIT_IN = { in: 1, mm: 1 / 25.4, cm: 1 / 2.54, pt: 1 / 72, pc: 1 / 6, px: 1 / 96, '': 1 / 96 };
 const SKIP = new Set(['defs', 'clipPath', 'mask', 'symbol', 'marker', 'pattern', 'metadata', 'title', 'desc', 'style', 'script', 'linearGradient', 'radialGradient', 'filter', 'text']);
@@ -83,30 +84,45 @@ function shapeToD(el) {
   return '';
 }
 
-/** Converts a path "d" string to flattened subpaths using matrix m. `tol` is in output units. */
+/**
+ * Converts a path "d" string to flattened subpaths using matrix m. `tol` is in output units.
+ * Each subpath also keeps its Bézier nodes (for node editing).
+ */
 export function dToPaths(d, m, tol = TOL) {
   const out = [];
-  let cur = null, pos = [0, 0], start = [0, 0];
-  const end = (closed) => { if (cur && cur.length > 1) out.push(clean({ pts: cur, closed })); cur = null; };
+  let cur = null, nodes = null, pos = [0, 0], start = [0, 0];
+  const end = (closed) => {
+    if (cur && cur.length > 1) {
+      const p = clean({ pts: cur, closed });
+      if (p.pts.length > 1) p.nodes = cleanNodes(nodes, p.closed);
+      out.push(p);
+    }
+    cur = null; nodes = null;
+  };
+  const begin = () => { const q = apply(m, pos); cur = [q]; nodes = [{ p: q, i: null, o: null }]; };
   svgpath(d).abs().unarc().unshort().iterate((seg) => {
     const c = seg[0];
-    if (c === 'M') { end(false); pos = [seg[1], seg[2]]; start = pos; cur = [apply(m, pos)]; return; }
-    if (!cur) cur = [apply(m, pos)];
+    if (c === 'M') { end(false); pos = [seg[1], seg[2]]; start = pos; begin(); return; }
+    if (!cur) begin();
+    const line = (p) => { pos = p; const q = apply(m, p); cur.push(q); nodes.push({ p: q, i: null, o: null }); };
     switch (c) {
-      case 'L': pos = [seg[1], seg[2]]; cur.push(apply(m, pos)); break;
-      case 'H': pos = [seg[1], pos[1]]; cur.push(apply(m, pos)); break;
-      case 'V': pos = [pos[0], seg[1]]; cur.push(apply(m, pos)); break;
+      case 'L': line([seg[1], seg[2]]); break;
+      case 'H': line([seg[1], pos[1]]); break;
+      case 'V': line([pos[0], seg[1]]); break;
       case 'C': {
-        const p = [seg[5], seg[6]];
-        flattenCubic(apply(m, pos), apply(m, [seg[1], seg[2]]), apply(m, [seg[3], seg[4]]), apply(m, p), cur, tol);
+        const p = [seg[5], seg[6]], c1 = apply(m, [seg[1], seg[2]]), c2 = apply(m, [seg[3], seg[4]]), q = apply(m, p);
+        flattenCubic(apply(m, pos), c1, c2, q, cur, tol);
+        nodes.at(-1).o = c1; nodes.push({ p: q, i: c2, o: null });
         pos = p; break;
       }
       case 'Q': {
-        const p = [seg[3], seg[4]];
-        flattenQuad(apply(m, pos), apply(m, [seg[1], seg[2]]), apply(m, p), cur, tol);
+        const p = [seg[3], seg[4]], p0 = apply(m, pos), k = apply(m, [seg[1], seg[2]]), q = apply(m, p);
+        flattenQuad(p0, k, q, cur, tol);
+        nodes.at(-1).o = [p0[0] + (2 / 3) * (k[0] - p0[0]), p0[1] + (2 / 3) * (k[1] - p0[1])];
+        nodes.push({ p: q, i: [q[0] + (2 / 3) * (k[0] - q[0]), q[1] + (2 / 3) * (k[1] - q[1])], o: null });
         pos = p; break;
       }
-      case 'Z': case 'z': cur.push(apply(m, start)); end(true); pos = start; break;
+      case 'Z': case 'z': line(start); end(true); pos = start; break;
     }
   });
   end(false);

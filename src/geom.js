@@ -27,8 +27,16 @@ export function invert(m) {
 /** Object transform: world = translate(x,y) · rotate(rot) · scale(sx,sy) · local */
 export const objMatrix = (o) => mul(translate(o.x, o.y), mul(rotate(o.rot || 0), scale(o.sx, o.sy)));
 
-export const transformPaths = (paths, m) =>
-  paths.map((p) => ({ ...p, pts: p.pts.map((pt) => apply(m, pt)) }));
+/** Transforms paths by matrix m. Bézier nodes (if any) go along unless keepNodes is false. */
+export const transformPaths = (paths, m, keepNodes = true) =>
+  paths.map((p) => {
+    const q = { ...p, pts: p.pts.map((pt) => apply(m, pt)) };
+    if (p.nodes) { if (keepNodes) q.nodes = transformNodeList(p.nodes, m); else delete q.nodes; }
+    return q;
+  });
+const transformNodeList = (nodes, m) => nodes.map((n) => ({
+  p: apply(m, n.p), i: n.i ? apply(m, n.i) : null, o: n.o ? apply(m, n.o) : null, t: n.t || 'c',
+}));
 
 // ---------- curve flattening ----------
 export function flattenCubic(p0, p1, p2, p3, out, tol = TOL, depth = 0) {

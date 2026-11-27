@@ -4,7 +4,7 @@
 //   { id, kind: 'shape' | 'text' | 'trace', name, color,
 //     x, y,          world position of the object's center (inches)
 //     sx, sy, rot,   scale (negative = mirrored) and rotation in degrees
-//     paths,         local geometry centered on (0,0): [{ pts, closed, el? }]
+//     paths,         local geometry centered on (0,0): [{ pts, closed, el?, nodes? }] (nodes: Béziers, see nodes.js)
 //     text?, trace?  source settings for regenerating the geometry
 //     weld?          { sources: [objects] } for a weld that can be unwelded
 //     offset?        { src: [ids], dist, join, linked, stamp } for an offset (contour) }
@@ -16,7 +16,7 @@ const HISTORY_LIMIT = 150;
 let nextId = 1;
 export const newId = () => `o${Date.now().toString(36)}${(nextId++).toString(36)}`;
 
-export const worldPaths = (o) => transformPaths(o.paths, objMatrix(o));
+export const worldPaths = (o, keepNodes = false) => transformPaths(o.paths, objMatrix(o), keepNodes);
 export const worldBox = (o) => bbox(worldPaths(o));
 export const groupBox = (objs) => objs.reduce((b, o) => unionBox(b, worldBox(o)), null);
 export const localBox = (o) => bbox(o.paths) || { x: 0, y: 0, w: 0, h: 0, x1: 0, y1: 0 };
@@ -38,7 +38,7 @@ export class Doc {
   on(fn) { this.listeners.add(fn); }
   emit(reason) { for (const fn of this.listeners) fn(reason); }
 
-  serialize() { return JSON.stringify({ app: 'FantastiCut', version: 2, objects: this.objects, layers: this.layers }); }
+  serialize() { return JSON.stringify({ app: 'FantastiCut', version: 3, objects: this.objects, layers: this.layers }); }
 
   load(json, { resetHistory = true } = {}) {
     const data = typeof json === 'string' ? JSON.parse(json) : json;

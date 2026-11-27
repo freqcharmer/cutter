@@ -4,7 +4,7 @@
 //   node tests/run.mjs [http://localhost:8123/] [path/to/playwright]
 //
 // Screenshots go to tests/out/. Exits with code 1 if any check fails.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,9 +23,41 @@ const bigSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="20in" height="40i
   <rect x="0" y="0" width="20" height="40" fill="#000"/><circle cx="10" cy="20" r="6" fill="#fff"/></svg>`;
 writeFileSync(join(out, 'two-color.svg'), twoColorSVG);
 writeFileSync(join(out, 'big.svg'), bigSVG);
+const curveSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="4in" height="2in" viewBox="0 0 4 2">
+  <circle cx="1" cy="1" r="0.8" fill="#000"/><path d="M2.4 0.2 L3.8 0.2 L3.8 1.8 L2.4 1.8 Z" fill="#000"/></svg>`;
+const circlesSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="4in" height="2in" viewBox="0 0 4 2">
+  <circle cx="1" cy="1" r="0.8" fill="#ff0000"/><circle cx="2" cy="1" r="0.8" fill="#0000ff"/></svg>`;
+writeFileSync(join(out, 'curves.svg'), curveSVG);
+writeFileSync(join(out, 'circles.svg'), circlesSVG);
 
 let failed = 0;
 const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  ' + extra : ''}`); if (!ok) failed++; };
+
+// ---------- brand guard (claude/brand.md): no retired logo can sneak back in ----------
+// Scans every text file in the repo. Fails on the retired blade path, or on Space Grotesk used anywhere
+// except the text tool's own font list (src/text.js) and lines that list the cutting fonts (credits, README).
+{
+  const root = join(here, '..');
+  const RETIRED = ['M18 80L84 18', 'M18 80 L84 18', 'M18,80L84,18', 'M18 80 84 18'];
+  const SG = 'Space' + ' Grotesk';
+  const skipDir = new Set(['.git', 'node_modules', 'out', 'vendor', 'fonts']);
+  const textExt = /\.(html|css|js|mjs|json|webmanifest|svg|md|txt|yml|yaml)$/i;
+  const files = [];
+  const walk = (dir) => { for (const n of readdirSync(dir)) { const p = join(dir, n); if (statSync(p).isDirectory()) { if (!skipDir.has(n)) walk(p); } else if (textExt.test(n)) files.push(p); } };
+  walk(root);
+  const bad = [];
+  for (const f of files) {
+    const rel = f.slice(root.length + 1).replace(/\\/g, '/');
+    if (rel === 'tests/run.mjs') continue;
+    readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
+      if (RETIRED.some((r) => line.includes(r))) bad.push(`${rel}:${i + 1} retired blade path`);
+      if (line.includes(SG) && rel !== 'src/text.js' && !/Bebas Neue/.test(line)) bad.push(`${rel}:${i + 1} ${SG} outside the text-tool font list`);
+    });
+  }
+  check('brand guard: no retired blade path or non-text-tool Space Grotesk in the repo', bad.length === 0, bad.slice(0, 5).join(' / '));
+  const icon = readFileSync(join(root, 'assets/fantasticut-icon-teal.svg'), 'utf8');
+  check('brand guard: the master icon has the locked blade path and Teal tile', icon.includes('M15 80L81 18') && icon.includes('#58A4B0') && icon.includes('rx="22"'));
+}
 
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
@@ -201,12 +233,95 @@ check('tiling cuts it in panels that each fit the roll', tiles.labels.length ===
 await shot('05-tiling');
 await page.keyboard.press('Escape');
 
+
 // ---------- undo everything, redo everything ----------
 const steps = await fc(() => fc.doc.undoStack.length);
 for (let i = 0; i < steps; i++) await page.keyboard.press('Control+z');
 check('undo all the way back to an empty design', (await count()) === 0);
 for (let i = 0; i < steps; i++) await page.keyboard.press('Control+Shift+z');
 check('redo all the way forward', (await count()) >= 1);
+
+// ---------- node editing ----------
+await fc(() => { fc.doc.objects = []; fc.doc.commit('clear'); });
+await page.setInputFiles('#file-import', join(out, 'curves.svg'));
+await page.waitForFunction(() => fc.doc.objects.length === 1);
+const stored = await fc(() => fc.doc.objects[0].paths.map((p) => ({ n: p.nodes?.length, curved: p.nodes?.some((n) => n.i || n.o) })));
+check('SVG import keeps Bézier nodes (circle: 4 curved nodes, square: 4 straight)', stored.length === 2 && stored[0].n === 4 && stored[0].curved && stored[1].n === 4 && !stored[1].curved, JSON.stringify(stored));
+await page.click('#zoom-fit');
+const ncr = await page.locator('#canvas').boundingBox();
+const toScr = (w) => fc((w) => fc.view.toScreen(w), w);
+const nodeWorld = (pi, ni) => fc(([pi, ni]) => { const o = fc.doc.objects[0], n = o.paths[pi].nodes[ni], c = Math.cos(o.rot * Math.PI / 180), s = Math.sin(o.rot * Math.PI / 180); const x = n.p[0] * o.sx, y = n.p[1] * o.sy; return [o.x + x * c - y * s, o.y + x * s + y * c]; }, [pi, ni]);
+let ctr = await toScr(await fc(() => { const o = fc.doc.objects[0], n = o.paths[0].nodes; return [o.x + (n[0].p[0] + n[2].p[0]) / 2 * o.sx, o.y + (n[0].p[1] + n[2].p[1]) / 2 * o.sy]; }));
+await page.mouse.dblclick(ncr.x + ctr[0], ncr.y + ctr[1]);
+await page.waitForTimeout(150);
+check('double-click a shape enters node mode and shows the node panel', await fc(() => !!fc.view.nodeEdit && !document.getElementById('p-nodes').hidden));
+await shot('07-node-mode');
+// drag a node
+const n0 = await nodeWorld(0, 0), s0 = await toScr(n0);
+await page.mouse.move(ncr.x + s0[0], ncr.y + s0[1]); await page.mouse.down();
+await page.mouse.move(ncr.x + s0[0] + 40, ncr.y + s0[1] - 30, { steps: 6 }); await page.mouse.up();
+const n0b = await nodeWorld(0, 0);
+const lbl = await fc(() => fc.doc.undoStack.at(-1).label);
+check('dragging a node moves it (one undo step)', Math.hypot(n0b[0] - n0[0], n0b[1] - n0[1]) > 0.1 && lbl === 'Move node', `${lbl} ${JSON.stringify(n0)} → ${JSON.stringify(n0b)}`);
+await page.keyboard.press('Control+z');
+const n0c = await nodeWorld(0, 0);
+check('Undo puts the node back and stays in node mode', Math.hypot(n0c[0] - n0[0], n0c[1] - n0[1]) < 1e-6 && await fc(() => !!fc.view.nodeEdit));
+// double-click a segment adds a node
+const segPt = await fc(() => { const o = fc.doc.objects[0], a = Math.PI / 4, n = o.paths[0].nodes; const cx = (n[0].p[0] + n[2].p[0]) / 2, cy = (n[1].p[1] + n[3].p[1]) / 2, r = Math.abs(n[0].p[0] - cx); return fc.view.toScreen([o.x + (cx + r * Math.cos(a)) * o.sx, o.y + (cy + r * Math.sin(a)) * o.sy]); });
+await page.mouse.dblclick(ncr.x + segPt[0], ncr.y + segPt[1]);
+await page.waitForTimeout(100);
+check('double-click a line adds a node', (await fc(() => fc.doc.objects[0].paths[0].nodes.length)) === 5);
+await page.keyboard.press('Delete');
+check('Delete removes the picked node', (await fc(() => fc.doc.objects[0].paths[0].nodes.length)) === 4);
+// right-click a node: node menu, break, then join
+const s1 = await toScr(await nodeWorld(0, 1));
+await page.mouse.click(ncr.x + s1[0], ncr.y + s1[1], { button: 'right' });
+await page.waitForTimeout(100);
+const nmenu = await fc(() => [...document.querySelectorAll('#ctx button')].map((b) => b.textContent));
+check('right-click in node mode shows the node menu', nmenu.some((t) => t.startsWith('Break path here')) && nmenu.some((t) => t.startsWith('Corner')), nmenu.slice(0, 5).join(' | '));
+await page.click('#ctx button:has-text("Break path here")');
+const broke = await fc(() => ({ closed: fc.doc.objects[0].paths[0].closed, n: fc.doc.objects[0].paths[0].nodes.length }));
+check('Break opens the closed path at that node', broke.closed === false && broke.n === 5, JSON.stringify(broke));
+await fc(() => { const ne = fc.view.nodeEdit, L = fc.doc.objects[0].paths[0].nodes.length; ne.sel = new Set(['0:0', '0:' + (L - 1)]); fc.nodeOp('join'); });
+const joined = await fc(() => ({ closed: fc.doc.objects[0].paths[0].closed, n: fc.doc.objects[0].paths[0].nodes.length }));
+check('Join closes it again', joined.closed && joined.n === 4, JSON.stringify(joined));
+await fc(() => { fc.view.nodeEdit.sel = new Set(['1:0']); fc.nodeOp('smooth'); });
+check('Smooth adds in-line handles to a corner node', await fc(() => { const n = fc.doc.objects[0].paths[1].nodes[0]; return n.t === 's' && !!n.i && !!n.o; }));
+await page.keyboard.press('Escape');
+check('Esc leaves node mode', await fc(() => !fc.view.nodeEdit));
+// text converts to shapes on the first node change; undo brings the text back
+await fc(() => { fc.doc.objects = []; fc.doc.commit('clear'); });
+await page.click('#btn-text');
+await page.waitForFunction(() => fc.doc.objects.length === 1 && fc.doc.objects[0].kind === 'text');
+await page.waitForTimeout(300);
+await fc(() => fc.enterNodes(fc.doc.objects[0]));
+const tn = await fc(() => ({ kind: fc.doc.objects[0].kind, fitted: fc.view.nodePaths().reduce((a, l) => a + l.length, 0), pts: fc.doc.objects[0].paths.reduce((a, p) => a + p.pts.length, 0) }));
+await fc(() => { fc.view.nodeEdit.sel = new Set(['0:0']); fc.nodeOp('corner'); });
+const tk = await fc(() => fc.doc.objects[0].kind);
+await page.keyboard.press('Control+z');
+const tu = await fc(() => fc.doc.objects[0].kind);
+check('welded text shows fitted nodes (fewer than its points)', tn.kind === 'text' && tn.fitted > 0 && tn.fitted <= tn.pts * 0.6, JSON.stringify(tn));
+check('editing text nodes turns it into shapes, and Undo brings the text back', tk === 'shape' && tu === 'text', `${tk} → ${tu}`);
+await page.keyboard.press('Escape');
+// weld two circles, then simplify
+await fc(() => { fc.doc.objects = []; fc.doc.commit('clear'); });
+await page.setInputFiles('#file-import', join(out, 'circles.svg'));
+await page.waitForFunction(() => fc.doc.objects.length === 2);
+await fc(() => fc.doc.select(fc.doc.objects.map((o) => o.id)));
+await page.click('#b-combine');
+check('Combine makes one object without welding (both outlines kept)', await fc(() => fc.doc.objects.length === 1 && fc.doc.objects[0].paths.length === 2 && fc.doc.objects[0].paths.every((p) => p.nodes)));
+await page.keyboard.press('Control+z');
+check('Undo splits a combine back into its objects', (await count()) === 2);
+await fc(() => fc.doc.select(fc.doc.objects.map((o) => o.id)));
+await page.keyboard.press('Control+g');
+await fc(() => fc.enterNodes(fc.doc.objects[0]));
+const wn = await fc(() => fc.view.nodePaths().reduce((a, l) => a + l.length, 0));
+await page.locator('#n-simp').fill('100');
+await page.locator('#n-simp').dispatchEvent('change');
+const wn2 = await fc(() => ({ n: fc.doc.objects[0].paths.reduce((a, p) => a + p.nodes.length, 0), weld: !!fc.doc.objects[0].weld, label: fc.doc.undoStack.at(-1).label }));
+check('Simplify re-fits a weld with fewer nodes (one undo step)', wn2.n <= wn && !wn2.weld && wn2.label === 'Simplify', `${wn} → ${JSON.stringify(wn2)}`);
+await shot('08-node-weld-simplified');
+await page.keyboard.press('Escape');
 
 // ---------- autosave keeps layer names ----------
 await fc(() => { fc.doc.layers['#000000'] = { name: 'Matte black' }; fc.doc.commit('Rename layer'); return fc.doc.saveNow(); });

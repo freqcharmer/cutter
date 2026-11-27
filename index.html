@@ -5,16 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>FantastiCut</title>
   <meta name="theme-color" content="#1B1B1E">
-  <link rel="icon" href="assets/logo-mark.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/fantasticut-icon-16.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/fantasticut-icon-32.png" sizes="32x32" type="image/png">
+  <link rel="icon" href="assets/fantasticut-icon-16.png" sizes="16x16" type="image/png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&display=swap">
+  <link rel="apple-touch-icon" href="assets/fantasticut-icon-192.png">
+  <link rel="preload" href="fonts/outfit-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/outfit-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/outfit-600.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><img src="assets/logo-mark.svg" alt="" width="26" height="26"><span><span class="a">Fantasti</span><span class="b">Cut</span></span></div>
+    <div class="brand" role="img" aria-label="FantastiCut"><img src="assets/fantasticut-icon-24.svg" alt="" width="30" height="30"><span class="wm"><span style="font-family:Outfit;font-weight:500">Fantasti</span><span style="font-family:Outfit;font-weight:600"><span style="letter-spacing:-0.018em">C</span>ut</span></span></div>
 
     <div class="group" role="toolbar" aria-label="File">
       <button class="tb" id="btn-new" title="New design (Ctrl+N)">New</button>
@@ -91,6 +94,8 @@
           <button class="tb" id="b-unweld" title="Split a weld back into the pieces it was made from">Unweld</button>
           <button class="tb" id="b-offset" title="Add a border around the selection (or a shape inside it)">Offset</button>
           <button class="tb" id="b-repeat" title="Make rows and columns of copies">Step and repeat</button>
+          <button class="tb" id="b-nodes" title="Drag nodes and curve handles (or double-click the shape)">Edit nodes</button>
+          <button class="tb" id="b-combine" title="Make the selected objects one object without welding">Combine</button>
         </div>
         <p class="hint">Right-click (or press and hold) anything for more.</p>
         <div class="btns" id="align-row">
@@ -99,6 +104,25 @@
           <button class="tb" data-align="hcenter" title="Center horizontally">Center &harr;</button>
           <button class="tb" data-align="vcenter" title="Center vertically">Center &varr;</button>
         </div>
+      </section>
+
+      <section class="panel" id="p-nodes" hidden>
+        <h2>Edit nodes</h2>
+        <p class="hint" id="n-info"></p>
+        <div class="btns">
+          <button class="tb" data-node="corner" title="Handles move on their own">Corner</button>
+          <button class="tb" data-node="smooth" title="Handles stay in line">Smooth</button>
+          <button class="tb" data-node="symmetric" title="Handles stay in line and the same length">Symmetric</button>
+          <button class="tb" data-node="line" title="Straighten the segment between two picked nodes">Line</button>
+          <button class="tb" data-node="curve" title="Curve the segment between two picked nodes">Curve</button>
+          <button class="tb" data-node="break" title="Open the path at the picked node">Break</button>
+          <button class="tb" data-node="join" title="Join two open ends">Join</button>
+          <button class="tb" data-node="close" title="Close an open path">Close</button>
+          <button class="tb danger" data-node="delete" title="Delete the picked nodes (Del)">Delete</button>
+        </div>
+        <label class="block">Simplify (fewer nodes) <output id="n-simp-v"></output><input id="n-simp" type="range" min="0" max="100" value="0"></label>
+        <p class="hint">Drag nodes and handles. Double-click a line to add a node, or a node to switch corner and smooth. Shift-click or drag a box to pick several. Alt-drag a handle to make a corner. Arrow keys nudge.</p>
+        <div class="btns"><button class="cutbtn" id="n-done">Done</button></div>
       </section>
 
       <section class="panel" id="p-text" hidden>
@@ -305,11 +329,13 @@
       <tr><td>Ctrl+Enter</td><td>Cut</td></tr>
       <tr><td>Right-click, or press and hold</td><td>Menu: weld, unweld, offset, step and repeat, and more</td></tr>
       <tr><td>Ctrl+G / Ctrl+Shift+G</td><td>Weld / Unweld</td></tr>
+      <tr><td>Double-click a shape</td><td>Edit nodes (Esc or Enter when done)</td></tr>
+      <tr><td>Double-click a line / a node</td><td>Add a node / switch corner and smooth</td></tr>
     </table>
     <h3>From EMFDPRODCO</h3>
     <p><a href="https://emfdprodco.com/" target="_blank" rel="noopener">EMFDPRODCO.com</a> &middot; Hosted by <a href="https://ghostilla.com/" target="_blank" rel="noopener">gHostilla</a></p>
     <h3>Open source inside</h3>
-    <p class="hint">opentype.js (MIT), ImageTracer.js (Unlicense), dxf-parser (MIT), svgpath (MIT), Clipper2 (clipper2-ts, Boost Software License). Fonts: Bebas Neue, Oswald, Space Grotesk, Pacifico (SIL Open Font License).</p>
+    <p class="hint">opentype.js (MIT), ImageTracer.js (Unlicense), dxf-parser (MIT), svgpath (MIT), Clipper2 (clipper2-ts, Boost Software License). Fonts: Outfit (brand), Bebas Neue, Oswald, Space Grotesk, Pacifico (SIL Open Font License).</p>
     <p class="hint"><a href="terms.html">Terms</a> &middot; <a href="privacy.html">Privacy</a></p>
   </dialog>
 

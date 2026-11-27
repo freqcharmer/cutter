@@ -1,6 +1,7 @@
 // Text: font registry (bundled, installed via Local Font Access, uploaded) and text → paths.
 import { parse as parseFont } from '../vendor/opentype.mjs';
 import { flattenCubic, flattenQuad, clean } from './geom.js';
+import { cleanNodes } from './nodes.js';
 import { idbGet, idbSet, idbKeys } from './store.js';
 import { weld } from './clip.js';
 
@@ -101,14 +102,27 @@ export function textToPaths(font, t) {
 }
 
 function commandsToPaths(cmds, out) {
-  let cur = null, pos = [0, 0], start = [0, 0];
-  const end = (closed) => { if (cur && cur.length > 2) out.push({ ...clean({ pts: cur, closed }), color: '#000000' }); cur = null; };
+  let cur = null, nodes = null, pos = [0, 0], start = [0, 0];
+  const end = (closed) => {
+    if (cur && cur.length > 2) {
+      const p = clean({ pts: cur, closed });
+      p.nodes = cleanNodes(nodes, p.closed);
+      out.push({ ...p, color: '#000000' });
+    }
+    cur = null; nodes = null;
+  };
   for (const c of cmds) {
-    if (c.type === 'M') { end(true); pos = [c.x, c.y]; start = pos; cur = [pos]; }
-    else if (c.type === 'L') { pos = [c.x, c.y]; cur?.push(pos); }
-    else if (c.type === 'C') { const p = [c.x, c.y]; flattenCubic(pos, [c.x1, c.y1], [c.x2, c.y2], p, cur); pos = p; }
-    else if (c.type === 'Q') { const p = [c.x, c.y]; flattenQuad(pos, [c.x1, c.y1], p, cur); pos = p; }
-    else if (c.type === 'Z') { cur?.push(start); end(true); pos = start; }
+    if (c.type === 'M') { end(true); pos = [c.x, c.y]; start = pos; cur = [pos]; nodes = [{ p: pos, i: null, o: null }]; }
+    else if (!cur) continue;
+    else if (c.type === 'L') { pos = [c.x, c.y]; cur.push(pos); nodes.push({ p: pos, i: null, o: null }); }
+    else if (c.type === 'C') {
+      const p = [c.x, c.y]; flattenCubic(pos, [c.x1, c.y1], [c.x2, c.y2], p, cur);
+      nodes.at(-1).o = [c.x1, c.y1]; nodes.push({ p, i: [c.x2, c.y2], o: null }); pos = p;
+    } else if (c.type === 'Q') {
+      const p = [c.x, c.y]; flattenQuad(pos, [c.x1, c.y1], p, cur);
+      nodes.at(-1).o = [pos[0] + (2 / 3) * (c.x1 - pos[0]), pos[1] + (2 / 3) * (c.y1 - pos[1])];
+      nodes.push({ p, i: [p[0] + (2 / 3) * (c.x1 - p[0]), p[1] + (2 / 3) * (c.y1 - p[1])], o: null }); pos = p;
+    } else if (c.type === 'Z') { cur.push(start); nodes.push({ p: start, i: null, o: null }); end(true); pos = start; }
   }
   end(true);
 }
