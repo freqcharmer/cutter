@@ -17,7 +17,7 @@ import { Cutter, supported as serialSupported } from './serial.js';
 
 // Version: v0.1 until E's first real test cut, then 1.0. BUILD changes with every deploy (also in index.html).
 export const VERSION = 'v0.1';
-export const BUILD = '2026-11-27 Phase 3';
+export const BUILD = '2026-11-27 Phase 3 phone';
 const $ = (id) => document.getElementById(id);
 
 // ---------- state ----------
@@ -361,6 +361,7 @@ function refreshPanels(liveOnly = false) {
   $('p-sel').hidden = sel.length === 0;
   const one = sel.length === 1 ? sel[0] : null;
   const ne = view.nodeEdit;
+  $('sheet-label').textContent = ne ? 'Edit nodes' : one ? one.name : sel.length ? `${sel.length} objects` : 'Design and layers';
   $('p-nodes').hidden = !ne;
   if (ne) {
     $('p-sel').hidden = true;
@@ -1385,7 +1386,13 @@ function refreshConn() {
 cutter.onchange = refreshConn;
 
 async function connect({ forcePicker = false } = {}) {
-  if (!serialSupported()) throw new Error('This browser cannot talk to cutters. Open FantastiCut in Chrome or Edge on a computer. Until then, "Save .plt" saves the job as a file.');
+  if (!serialSupported()) throw new Error(/Android|iPhone|iPad/i.test(navigator.userAgent)
+    ? 'This phone\'s browser can\'t reach the cutter yet: phones don\'t show USB serial adapters to web apps. Design here, then cut from Flip (your design autosaves only in this browser, so use Save to move it), or use Save .plt in the Cut window.'
+    : 'This browser cannot talk to cutters. Open FantastiCut in Chrome or Edge on a computer. Until then, "Save .plt" saves the job as a file.');
+  if (/Android/i.test(navigator.userAgent) && !lsGet('fc.androidSerialNote', false)) {
+    lsSet('fc.androidSerialNote', true);
+    toast('Heads-up: most Android phones don\'t list USB serial adapters to web apps yet, so the list may be empty. If it is, cut from Flip or use Save .plt.', { ms: 9000 });
+  }
   $('btn-conn').classList.add('busy');
   try {
     await cutter.choose({ forcePicker });
@@ -1731,6 +1738,10 @@ $('b-ungroup').onclick = ungroup;
 $('b-weld').onclick = weldSelection;
 $('b-unweld').onclick = unweldSelection;
 $('b-offset').onclick = addOffset;
+// Side panel as a pull-up sheet on phones (CSS shows the handle only on narrow screens)
+function setSheet(open) { $('side').classList.toggle('collapsed', !open); $('sheet-handle').setAttribute('aria-expanded', String(open)); lsSet('fc.sheet', open); }
+setSheet(lsGet('fc.sheet', !matchMedia('(max-width: 600px)').matches));
+$('sheet-handle').onclick = () => setSheet($('side').classList.contains('collapsed'));
 $('b-combine').onclick = combineSelection;
 $('b-nest').onclick = openNest;
 $('ns-start').onclick = startBestFit;
@@ -1906,6 +1917,21 @@ window.addEventListener('beforeunload', () => { doc.saveNow(); });
 })();
 
 // For testing in the browser console.
+// ---------- "Install as an app" hint on phones ----------
+let installEvt = null;
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; $('install-go').hidden = false; });
+function maybeInstallHint() {
+  const phone = matchMedia('(max-width: 860px) and (pointer: coarse)').matches;
+  const installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  if (!phone || installed || lsGet('fc.installHint', false)) return;
+  $('install-hint').hidden = false;
+  if (!installEvt) $('install-text').textContent = 'Tip: install FantastiCut as an app (your browser menu, then Add to phone or Install app). More room to design, and it works offline.';
+}
+$('install-go').onclick = async () => { if (!installEvt) return; installEvt.prompt(); const r = await installEvt.userChoice; installEvt = null; if (r.outcome === 'accepted') { lsSet('fc.installHint', true); $('install-hint').hidden = true; } };
+$('install-x').onclick = () => { lsSet('fc.installHint', true); $('install-hint').hidden = true; };
+addEventListener('appinstalled', () => { lsSet('fc.installHint', true); $('install-hint').hidden = true; });
+setTimeout(maybeInstallHint, 4000);
+
 window.fc = { doc, view, settings: () => settings, prepareJob, planJob, BUNDLED, plan: () => currentPlan, nest: () => nest, nestUnits: (objs) => nestUnits(objs).units.length, enterNodes, exitNodes, nodeOp, tracer, traceDraft: () => traceDraft };
 
 // Opening a .fcut file from Windows when FantastiCut is installed as an app.

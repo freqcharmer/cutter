@@ -87,7 +87,7 @@ const fc = (fn, arg) => page.evaluate(fn, arg);
   check('sw.js CORE lists every deployed file', missing.length === 0, missing.join(', '));
   const bad = await fc(async (list) => { const out = []; for (const f of list) { const r = await fetch(f, { cache: 'no-store' }); if (!r.ok) out.push(`${f} ${r.status}`); } return out; }, core);
   check('every file in sw.js CORE loads', bad.length === 0, bad.join(', '));
-  check('sw.js cache name was bumped for Phase 3', /const CACHE = 'fantasticut-v3'/.test(sw));
+  check('sw.js cache name was bumped (fantasticut-v4)', /const CACHE = 'fantasticut-v4'/.test(sw));
   const ver = await fc(() => ({ st: document.getElementById('st-ver')?.textContent, meta: document.querySelector('meta[name=fantasticut-version]')?.content }));
   check('the version stamp shows v0.1 in the status bar and page', /v0\.1/.test(ver.st || '') && /v0\.1/.test(ver.meta || ''), JSON.stringify(ver));
   const brand = await fc(() => ({ font: getComputedStyle(document.querySelector('.brand .wm span')).fontFamily, icon: document.querySelector('.brand img').getAttribute('src'), fav: document.querySelector('link[rel=icon]').getAttribute('href'), w: document.querySelector('.brand').getBoundingClientRect().width }));
@@ -458,6 +458,36 @@ await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }
 await tpage.waitForTimeout(100);
 check('press and hold (touch) opens the menu', await tpage.evaluate(() => !document.getElementById('ctx').hidden));
 await tpage.screenshot({ path: join(out, '06-touch-menu.png') });
+
+// ---------- phone layout (Galaxy S24 size, touch) ----------
+const pctx = await browser.newContext({ viewport: { width: 360, height: 780 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3,
+  userAgent: 'Mozilla/5.0 (Linux; Android 16; SM-S921U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36 EdgA/148.0.0.0' });
+const ph = await pctx.newPage();
+ph.on('pageerror', (e) => errors.push(e.message));
+await ph.goto(URL_);
+await ph.waitForFunction(() => window.fc);
+await ph.setInputFiles('#file-import', join(out, 'two-color.svg'));
+await ph.waitForFunction(() => fc.doc.objects.length > 0);
+await ph.waitForTimeout(300);
+const lay = await ph.evaluate(() => {
+  const r = (s) => document.querySelector(s).getBoundingClientRect();
+  return { vh: innerHeight, vw: innerWidth, top: r('.topbar').height, canvas: r('#canvas').height, status: r('.statusbar').height,
+    scrollW: document.documentElement.scrollWidth, brand: r('.brand').width, cut: r('#btn-cut').top < r('.tools').top,
+    links: [...document.querySelectorAll('.statusbar .legal a')].length, collapsed: document.getElementById('side').classList.contains('collapsed') };
+});
+check('phone: the canvas gets at least half the screen', lay.canvas >= lay.vh * 0.5, JSON.stringify(lay));
+check('phone: one brand row (full wordmark, at least 160 px) plus one tool strip; no sideways page scrolling', lay.top <= 125 && lay.brand >= 160 && lay.cut && lay.scrollW <= lay.vw, JSON.stringify(lay));
+check('phone: the status bar is short and keeps the footer with its 3 links', lay.status <= 80 && lay.links === 3, JSON.stringify(lay));
+await ph.screenshot({ path: join(out, '14-phone.png') });
+await ph.tap('#sheet-handle');
+const sheet = await ph.evaluate(() => ({ open: !document.getElementById('side').classList.contains('collapsed'), h: document.getElementById('side').getBoundingClientRect().height, label: document.getElementById('sheet-label').textContent }));
+check('phone: the tools sheet starts collapsed and opens with a tap', lay.collapsed && sheet.open && sheet.h > 200, JSON.stringify(sheet));
+await ph.screenshot({ path: join(out, '15-phone-sheet.png') });
+await ph.tap('#sheet-handle');
+await ph.tap('#btn-conn');
+await ph.waitForTimeout(200);
+check('phone: Connect cutter explains why a phone can\'t reach the cutter yet', await ph.evaluate(() => [...document.querySelectorAll('.toast')].some((t) => /phone/i.test(t.textContent))));
+await pctx.close();
 
 check('no console errors', errors.length === 0, errors.slice(0, 3).join(' / '));
 await browser.close();

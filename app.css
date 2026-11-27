@@ -216,3 +216,48 @@ details.opt { border-radius: 8px; }
 details.opt summary { min-height: 44px; display: flex; align-items: center; }
 .cut-right canvas { border-radius: 8px; }
 .empty .big { font-weight: 600; }
+
+/* ---------- Phones and small tablets (Phase 3 fix) ----------
+   Full designing on a phone (Galaxy S24, about 360 x 780 CSS px): one brand row plus one scrolling tool strip,
+   the canvas gets the rest, the side panel is a pull-up sheet, and the status bar is two short lines. */
+.tools { display: contents; }
+.sheet-handle { display: none; }
+.install-hint { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 40; display: flex; gap: 8px; align-items: center;
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 12px; padding: 8px 8px 8px 16px; font-size: 14px; }
+.install-hint span { flex: 1; }
+@media (max-width: 860px) {
+  .work { grid-template-rows: minmax(0, 1fr) auto; }
+  .side { max-height: 60vh; padding-top: 0; }
+  .sheet-handle { display: flex; align-items: center; gap: 8px; position: sticky; top: 0; z-index: 2; width: calc(100% + 16px); margin: 0 -8px;
+    min-height: 44px; padding: 0 16px; background: var(--bg); color: var(--text); border: 0; border-bottom: 1px solid var(--line);
+    font: 600 12px "Outfit", system-ui, sans-serif; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; }
+  .sheet-handle .grip { width: 32px; height: 4px; border-radius: 2px; background: var(--dim); }
+  .sheet-handle #sheet-label { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sheet-handle .chev::after { content: "\25BE"; font-size: 14px; color: var(--dim); }
+  .side.collapsed .sheet-handle .chev::after { content: "\25B4"; }
+  .side.collapsed { overflow: hidden; }
+  .side.collapsed > :not(.sheet-handle) { display: none !important; }
+}
+@media (max-width: 600px) {
+  .topbar { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 0 8px; padding: 0 12px 8px; }
+  .brand { margin: 0; padding: 15px 0; justify-self: start; }
+  .topbar > .cutbtn { min-width: 88px; grid-column: 2; grid-row: 1; }
+  .tools { display: flex; grid-column: 1 / -1; grid-row: 2; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; padding-bottom: 2px; }
+  .tools::-webkit-scrollbar { display: none; }
+  .tools .group { flex: none; }
+  .tools .group:first-child { border-left: 0; padding-left: 0; }
+  .tools .spacer { display: none; }
+  .tools > .tb { flex: none; }
+  .zoombar { right: 8px; bottom: 8px; }
+  .zoombar .tb { padding: 4px 8px; }
+  .statusbar { gap: 4px 12px; padding: 8px 12px; font-size: 12px; }
+  .statusbar .link { display: inline-block; min-height: 0; min-width: 44px; padding: 14px 0; margin: -14px 0; }
+  .statusbar #st-cursor, .statusbar #st-saved, #st-ver .long { display: none; }
+  .statusbar .spacer { display: none; }
+  .statusbar .legal { width: 100%; font-size: 11px; line-height: 1.4; }
+  /* links stay 44px tall to touch without making the bar tall */
+  .statusbar .legal a { display: inline-block; min-height: 0; min-width: 0; padding: 14px 0; margin: -14px 0; }
+  .toasts { top: auto; bottom: 140px; left: 8px; right: 8px; transform: none; align-items: stretch; }
+  .dlg { padding: 0 16px 16px; width: 100vw; max-width: 100vw; max-height: 100dvh; border-radius: 16px 16px 0 0; margin: auto 0 0; }
+  .dlg.wide { width: 100vw; }
+}

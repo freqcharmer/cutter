@@ -1,5 +1,5 @@
 // Offline support: every file is fetched fresh when online and served from cache when offline.
-const CACHE = 'fantasticut-v3';
+const CACHE = 'fantasticut-v4';
 // Every deployed file. tests/run.mjs fails if a file is missing from this list or the list names a missing file.
 const CORE = [
   './', 'index.html', 'app.css', 'styles.css', 'manifest.webmanifest', 'terms.html', 'privacy.html',
