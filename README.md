@@ -34,6 +34,7 @@ From **EMFDPRODCO**. Live at https://emfdprodco.com/cutter/
 - Node editing: curves are kept as Béziers at import (SVG, DXF, fonts, traces) or fitted when needed (welds, offsets). Double-click a shape; drag nodes and handles; double-click a line to add a node; corner, smooth, and symmetric nodes; delete, break, join, close; make a segment a line or a curve; Simplify slider. Right-click (or press and hold) for the node menu
 - Combine: several objects become one without welding
 - Nesting (right-click → Nest, or Arrange → Nest): Fast rectangle packing, or Best fit true-shape nesting in a background worker (spacing, rotation steps, part in part, Stop keeps the best). Shows the vinyl length saved. Overlapping color layers and borders move with their pieces; materials marked "No rotation" never turn
+- Phones (tested at Galaxy S24 size): brand row plus a sideways-scrolling tool strip, canvas first, a pull-up tools sheet, a short status bar, and an install-as-app hint. Phones can't reach the cutter yet (no USB serial in mobile browsers); design there, cut from a computer
 - Brand from `claude/brand.md`: Teal icon (exact geometry, blade width by size), Outfit wordmark and UI type, Cutter palette, 44 px touch targets
 **Later (needs a cutter with an optical sensor):** print and cut, contour cut, sublimation and inkjet sticker die-cutting.
 
