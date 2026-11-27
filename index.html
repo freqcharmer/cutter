@@ -8,7 +8,8 @@
 </head>
 <body>
   <header>
-    <h1>Fantasti<span>Cut</span></h1>
+    <img id="logo" src="assets/logo.png" alt="FantastiCut" onerror="this.remove();document.getElementById('wordmark').hidden=false">
+    <h1 id="wordmark" hidden>Fantasti<span>Cut</span></h1>
     <p class="sub">Connection test: USCutter MH 871</p>
   </header>
 
@@ -47,7 +48,11 @@
     </section>
   </main>
 
-  <footer>From <strong>EMFDPRODCO</strong></footer>
+  <footer>
+    <div><a href="https://emfdprodco.com/">EMFDPRODCO</a> &middot; <a href="https://www.facebook.com/share/1CS2V7QysM/" target="_blank" rel="noopener">Contact</a></div>
+    <div>&copy; <span id="y"></span> EMFDPRODCO. All rights reserved. FantastiCut is an independent product; all names are the property of their respective owners.</div>
+  </footer>
+  <script>document.getElementById("y").textContent = new Date().getFullYear();</script>
   <script type="module" src="src/app.js"></script>
 </body>
 </html>
