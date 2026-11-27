@@ -5,9 +5,9 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
 header { padding: 32px 24px 8px; text-align: center; }
-#logo { display: block; max-width: min(420px, 80vw); height: auto; margin: 0 auto 8px; }
-h1 { margin: 0; font-size: 28px; letter-spacing: -0.5px; }
-h1 span { background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.logo { margin: 0 0 6px; display: inline-flex; align-items: center; gap: 14px; font-family: "Space Grotesk", system-ui, sans-serif; font-size: clamp(32px, 8vw, 48px); line-height: 1; letter-spacing: -0.035em; color: #F5F5F2; }
+.logo img { width: 1.2em; height: 1.2em; }
+.logo .a { font-weight: 500; } .logo .b { font-weight: 700; }
 .sub { margin: 4px 0 0; color: var(--dim); }
 main { max-width: 760px; margin: 0 auto; padding: 8px 24px 24px; display: grid; gap: 16px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
