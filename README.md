@@ -28,7 +28,13 @@ From **EMFDPRODCO**. Live at https://emfdprodco.com/cutter/
 - Step and repeat: rows, columns, a gap, "fill the roll width", and optional weed lines between copies
 - Blade lead-in: the blade swivels into line before each cut starts, so open lines start cleanly
 
-**Phase 3:** trace upgrades, nesting, node editing.
+**Phase 3 (done): better traces, less waste, real shape editing** (version v0.1 until the first real test cut)
+- Trace modes: Black and white; Colors (one color layer per color, background removed, lower colors overlap under upper ones so misalignment never shows a gap, or exact edges); Centerline for line art (a pen line, or a stroke width that makes a cuttable outline)
+- Live trace preview: tracing runs in a background worker; moving a slider previews, letting go keeps it as one Undo step
+- Node editing: curves are kept as Béziers at import (SVG, DXF, fonts, traces) or fitted when needed (welds, offsets). Double-click a shape; drag nodes and handles; double-click a line to add a node; corner, smooth, and symmetric nodes; delete, break, join, close; make a segment a line or a curve; Simplify slider. Right-click (or press and hold) for the node menu
+- Combine: several objects become one without welding
+- Nesting (right-click → Nest, or Arrange → Nest): Fast rectangle packing, or Best fit true-shape nesting in a background worker (spacing, rotation steps, part in part, Stop keeps the best). Shows the vinyl length saved. Overlapping color layers and borders move with their pieces; materials marked "No rotation" never turn
+- Brand from `claude/brand.md`: Teal icon (exact geometry, blade width by size), Outfit wordmark and UI type, Cutter palette, 44 px touch targets
 **Later (needs a cutter with an optical sensor):** print and cut, contour cut, sublimation and inkjet sticker die-cutting.
 
 ## Run it locally
@@ -49,7 +55,7 @@ With the local server running on port 8123:
 node tests/run.mjs http://localhost:8123/
 ```
 
-It drives the app in headless Chrome, checks text welding, color layers, weld and unweld, the right-click menu, linked offsets, step and repeat, cutting by color, weeding, tiling, undo and redo, autosave, and touch long-press, and saves screenshots to `tests/out/`.
+It drives the app in headless Chrome and saves screenshots to `tests/out/`. It checks the brand (no retired logo path, and the text-tool fonts kept out of the branding, the exact icon, the lockup), the offline file list, the version stamp, text welding, color layers, weld and unweld, the right-click menu, linked offsets, step and repeat, cutting by color, weeding, tiling, undo and redo, autosave, touch long-press, trace modes and live preview, node editing, combine, and nesting.
 
 ## Layout
 
@@ -63,16 +69,23 @@ src/doc.js            document model, undo/redo, autosave
 src/geom.js           matrices, curve flattening, measurements
 src/import-svg.js     SVG import (units, transforms, colors)
 src/import-dxf.js     DXF import (polylines with bulges, arcs, splines, blocks)
-src/import-image.js   PNG/JPG threshold + trace
+src/import-image.js   PNG/JPG import; Tracer (runs traces in the worker, newest settings win)
+src/trace-core.js     tracing: black and white, colors (palette, stacking, overlap), centerline
+src/trace-worker.js   Web Worker for tracing
+src/centerline.js     thinning (Zhang-Suen) and skeleton → polylines
+src/nodes.js          Bézier nodes: flattening, fitting (fit-curve), add/delete/break/join, handle rules
+src/nest-core.js      nesting: rectangle packing, convex-piece NFPs, placement, genetic search
+src/nest-worker.js    Web Worker for Best fit nesting
 src/text.js           fonts and text outlines
 src/job.js            cut plan (layers, panels, weeding, marks), cut order, overcut, blade offset, axes, time estimate
 src/clip.js           weld, offset, and clipping (Clipper2)
 src/hpgl.js           HPGL output
 src/serial.js         Web Serial connection
 src/presets.js        materials and settings
-vendor/               opentype.js, ImageTracer.js, dxf-parser, svgpath, Clipper2 (ES module builds)
+vendor/               opentype.js, ImageTracer.js, dxf-parser, svgpath, Clipper2, fit-curve (ES module builds)
+assets/               brand icons (fantasticut-icon-*.svg/png, decal master) from claude/brand.md
 tests/run.mjs         headless tests (Playwright + Chrome); not deployed
-fonts/                Bebas Neue, Oswald, Space Grotesk, Pacifico (SIL OFL)
+fonts/                Outfit (brand UI); Bebas Neue, Oswald, Space Grotesk, Pacifico (text tool) (all SIL OFL)
 ```
 
 ## Cutter notes (MH 871)
@@ -92,4 +105,4 @@ If Windows has the cutter installed as a printer through USCutter's driver, a sa
 
 ## Licenses of included code
 
-opentype.js (MIT), ImageTracer.js (Unlicense), dxf-parser (MIT), svgpath (MIT), Clipper2 via clipper2-ts 2.0.1 (Boost Software License 1.0). Fonts are under the SIL Open Font License 1.1.
+opentype.js (MIT), ImageTracer.js (Unlicense), dxf-parser (MIT), svgpath (MIT), Clipper2 via clipper2-ts 2.0.1 (Boost Software License 1.0), fit-curve 0.2.0 (MIT). Nesting follows the method of SVGnest by Jack Qiao (MIT); the code is FantastiCut's own. Fonts (Outfit, Bebas Neue, Oswald, Space Grotesk, Pacifico) are under the SIL Open Font License 1.1.

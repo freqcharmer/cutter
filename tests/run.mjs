@@ -29,6 +29,8 @@ const circlesSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="4in" height="
   <circle cx="1" cy="1" r="0.8" fill="#ff0000"/><circle cx="2" cy="1" r="0.8" fill="#0000ff"/></svg>`;
 writeFileSync(join(out, 'curves.svg'), curveSVG);
 writeFileSync(join(out, 'circles.svg'), circlesSVG);
+const Ls = Array.from({ length: 6 }, (_, i) => `<path d="M${i * 5} 0h4v1h-3v3h-1z" fill="#000"/>`).join('');
+writeFileSync(join(out, 'ls.svg'), `<svg xmlns="http://www.w3.org/2000/svg" width="30in" height="4in" viewBox="0 0 30 4">${Ls}</svg>`);
 
 let failed = 0;
 const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  ' + extra : ''}`); if (!ok) failed++; };
@@ -73,6 +75,24 @@ await page.evaluate(async () => { localStorage.clear(); indexedDB.deleteDatabase
 await page.reload();
 await page.waitForFunction(() => window.fc);
 const fc = (fn, arg) => page.evaluate(fn, arg);
+
+// ---------- offline list and version ----------
+{
+  const root = join(here, '..');
+  const sw = readFileSync(join(root, 'sw.js'), 'utf8');
+  const core = [...sw.match(/const CORE = \[([\s\S]*?)\];/)[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  const deployed = ['index.html', 'app.css', 'styles.css', 'manifest.webmanifest', 'terms.html', 'privacy.html',
+    ...['assets', 'fonts', 'src', 'vendor'].flatMap((d) => readdirSync(join(root, d)).map((f) => `${d}/${f}`))];
+  const missing = deployed.filter((f) => !core.includes(f));
+  check('sw.js CORE lists every deployed file', missing.length === 0, missing.join(', '));
+  const bad = await fc(async (list) => { const out = []; for (const f of list) { const r = await fetch(f, { cache: 'no-store' }); if (!r.ok) out.push(`${f} ${r.status}`); } return out; }, core);
+  check('every file in sw.js CORE loads', bad.length === 0, bad.join(', '));
+  check('sw.js cache name was bumped for Phase 3', /const CACHE = 'fantasticut-v3'/.test(sw));
+  const ver = await fc(() => ({ st: document.getElementById('st-ver')?.textContent, meta: document.querySelector('meta[name=fantasticut-version]')?.content }));
+  check('the version stamp shows v0.1 in the status bar and page', /v0\.1/.test(ver.st || '') && /v0\.1/.test(ver.meta || ''), JSON.stringify(ver));
+  const brand = await fc(() => ({ font: getComputedStyle(document.querySelector('.brand .wm span')).fontFamily, icon: document.querySelector('.brand img').getAttribute('src'), fav: document.querySelector('link[rel=icon]').getAttribute('href'), w: document.querySelector('.brand').getBoundingClientRect().width }));
+  check('the top bar uses the brand lockup (Outfit wordmark, 24 px icon file, 16 px favicon, at least 160 px wide)', /Outfit/.test(brand.font) && /icon-24/.test(brand.icon) && /icon-16/.test(brand.fav) && brand.w >= 160, JSON.stringify(brand));
+}
 const count = () => fc(() => fc.doc.objects.length);
 const shot = (n) => page.screenshot({ path: join(out, n + '.png') });
 
@@ -240,6 +260,97 @@ for (let i = 0; i < steps; i++) await page.keyboard.press('Control+z');
 check('undo all the way back to an empty design', (await count()) === 0);
 for (let i = 0; i < steps; i++) await page.keyboard.press('Control+Shift+z');
 check('redo all the way forward', (await count()) >= 1);
+
+// ---------- trace upgrades ----------
+await fc(() => { fc.doc.objects = []; fc.doc.commit('clear'); });
+const pngs = await fc(() => {
+  const mk = (w, h, draw) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); draw(g); return c.toDataURL('image/png').split(',')[1]; };
+  return {
+    logo: mk(300, 180, (g) => { g.fillStyle = '#fadc00'; g.fillRect(0, 0, 300, 180); g.fillStyle = '#dc1e1e'; g.beginPath(); g.arc(90, 90, 60, 0, 7); g.fill(); g.fillStyle = '#1428c8'; g.fillRect(170, 30, 100, 120); g.fillStyle = '#fff'; g.fillRect(200, 60, 40, 60); }),
+    art: mk(220, 220, (g) => { g.strokeStyle = '#000'; g.lineWidth = 8; g.beginPath(); g.moveTo(50, 10); g.lineTo(50, 110); g.moveTo(5, 60); g.lineTo(100, 60); g.stroke(); g.beginPath(); g.arc(150, 150, 40, 0, 7); g.stroke(); }),
+  };
+});
+writeFileSync(join(out, 'logo.png'), Buffer.from(pngs.logo, 'base64'));
+writeFileSync(join(out, 'lineart.png'), Buffer.from(pngs.art, 'base64'));
+await page.setInputFiles('#file-import', join(out, 'logo.png'));
+await page.waitForFunction(() => fc.doc.objects.length === 1 && fc.doc.objects[0].kind === 'trace');
+check('the trace panel offers Black and white, Colors, and Centerline', await fc(() => !document.getElementById('p-trace').hidden && [...document.querySelectorAll('#tr-mode option')].length === 3));
+const stepsBefore = await fc(() => fc.doc.undoStack.length);
+await page.selectOption('#tr-mode', 'color');
+await page.waitForFunction(() => fc.doc.objects.length >= 3, null, { timeout: 15000 });
+const tl = await fc(() => fc.doc.objects.map((o) => ({ c: o.color, g: o.trace?.group, k: o.kind })));
+check('Colors mode traces into one layer per color, background removed (3 layers)', tl.length === 3 && new Set(tl.map((x) => x.c)).size === 3 && tl.every((x) => x.g && x.g === tl[0].g), JSON.stringify(tl));
+check('changing the trace mode is one undo step', (await fc(() => fc.doc.undoStack.length)) === stepsBefore + 1);
+const overArea = await fc(() => fc.doc.objects.map((o) => o.paths.length));
+await page.selectOption('#tr-stack', 'exact');
+await page.waitForTimeout(800);
+const exact = await fc(() => fc.doc.objects.map((o) => o.trace.stack));
+check('Exact edges re-traces the whole group', exact.length === 3 && exact.every((s) => s === 'exact'), JSON.stringify(exact));
+await shot('09-trace-colors');
+// live preview: a slider drag shows a preview first, then one undo step on release
+const n0s = await fc(() => fc.doc.undoStack.length);
+await fc(() => { const el = document.getElementById('tr-colors'); el.value = 2; el.dispatchEvent(new Event('input')); });
+await page.waitForFunction(() => fc.traceDraft()?.layers, null, { timeout: 15000 });
+const prev = await fc(() => ({ layers: fc.traceDraft().layers.length, steps: fc.doc.undoStack.length, hidden: fc.view.hidden?.size }));
+check('moving a trace slider shows a live preview without changing the design', prev.steps === n0s && prev.layers >= 1 && prev.hidden === 3, JSON.stringify(prev));
+await shot('10-trace-preview');
+await fc(() => document.getElementById('tr-colors').dispatchEvent(new Event('change')));
+await page.waitForFunction((n) => fc.doc.undoStack.length === n + 1, n0s, { timeout: 15000 });
+check('letting go of the slider keeps the trace as one undo step', (await fc(() => !fc.traceDraft() && fc.doc.undoStack.at(-1).label)) === 'Trace settings');
+await page.keyboard.press('Control+z');
+check('Undo brings back the 3-color trace', (await count()) === 3);
+// centerline
+await fc(() => { fc.doc.objects = []; fc.doc.commit('clear'); });
+await page.setInputFiles('#file-import', join(out, 'lineart.png'));
+await page.waitForFunction(() => fc.doc.objects.length === 1 && fc.doc.objects[0].kind === 'trace');
+await page.selectOption('#tr-mode', 'center');
+await page.waitForFunction(() => fc.doc.objects[0]?.trace?.mode === 'center', null, { timeout: 15000 });
+const cl = await fc(() => fc.doc.objects[0].paths.map((p) => p.closed));
+check('Centerline with the default stroke width gives cuttable closed outlines', cl.length >= 2 && cl.every(Boolean), JSON.stringify(cl));
+await page.fill('#tr-stroke', ''); await page.dispatchEvent('#tr-stroke', 'change');
+await page.waitForFunction(() => fc.doc.objects[0]?.trace?.stroke === 0, null, { timeout: 15000 });
+const pen = await fc(() => fc.doc.objects[0].paths.map((p) => p.closed));
+check('Centerline as a pen line gives single strokes (open lines plus the ring)', pen.filter((c) => !c).length >= 2 && pen.filter(Boolean).length === 1, JSON.stringify(pen));
+await shot('11-centerline');
+
+// ---------- nesting ----------
+await fc(() => { fc.doc.objects = []; fc.doc.commit('clear'); });
+await page.setInputFiles('#file-import', join(out, 'ls.svg'));
+await page.waitForFunction(() => fc.doc.objects.length === 1);
+await page.click('#b-ungroup');
+await page.setInputFiles('#file-import', join(out, 'two-color.svg'));
+await page.waitForFunction(() => fc.doc.objects.length === 8);
+await fc(() => { fc.doc.select([fc.doc.objects[0].id]); });
+await page.click('#b-offset');
+await fc(() => fc.doc.select(fc.doc.objects.map((o) => o.id)));
+const pair = () => fc(() => { const a = fc.doc.objects.find((o) => o.color === '#ff0000'), b = fc.doc.objects.find((o) => o.color === '#0000ff'); return [b.x - a.x, b.y - a.y]; });
+const pair0 = await pair();
+await page.click('#b-nest');
+await page.waitForTimeout(200);
+const fast = await fc(() => ({ units: fc.nest().units.length, before: fc.nest().before, after: fc.nest().after, placed: fc.nest().result.place.length, text: document.getElementById('ns-facts').textContent }));
+check('Nest groups overlapping colors and borders with their pieces (7 units)', fast.units === 7, JSON.stringify(fast));
+check('Fast nesting packs the pieces shorter and reports the saving', fast.placed === 7 && fast.after < fast.before && /Saves/.test(fast.text), JSON.stringify(fast));
+await shot('12-nest-fast');
+await page.selectOption('#ns-method', 'best');
+await page.click('#ns-start');
+await page.waitForFunction(() => fc.nest()?.result, null, { timeout: 30000 });
+await page.waitForTimeout(1500);
+await page.click('#ns-start'); // Stop
+const best = await fc(() => ({ after: fc.nest().after, kept: !!fc.nest().result, worker: !!fc.nest().worker, status: document.getElementById('ns-status').textContent }));
+check('Best fit runs in a worker; Stop keeps the best result', best.kept && !best.worker && /Stopped|Done/.test(best.status), JSON.stringify(best));
+check('Best fit is at least as tight as rectangle packing', best.after <= fast.after + 1e-6, `${fast.after.toFixed(2)} → ${best.after.toFixed(2)}`);
+await shot('13-nest-best');
+const steps0 = await fc(() => fc.doc.undoStack.length);
+await page.click('#ns-apply');
+const applied = await fc(() => ({ steps: fc.doc.undoStack.length, label: fc.doc.undoStack.at(-1).label, units: fc.nestUnits(fc.doc.objects.slice()), linked: fc.doc.objects.some((o) => o.kind === 'offset' && o.offset.linked), maxY: Math.max(...fc.doc.objects.map((o) => { let m = -1e9; for (const p of o.paths) for (const [x, y] of p.pts) { const c = Math.cos(o.rot * Math.PI / 180), s = Math.sin(o.rot * Math.PI / 180); m = Math.max(m, o.y + x * o.sx * s + y * o.sy * c); } return m; })) }));
+check('Apply nests as one undo step; no pieces overlap; the border stays linked; all within the roll', applied.steps === steps0 + 1 && applied.label === 'Nest' && applied.units === 7 && applied.linked && applied.maxY <= 31 + 1e-6, JSON.stringify(applied));
+const pair1 = await pair();
+check('overlapping color layers move together (still lined up)', Math.hypot(pair1[0], pair1[1]) - Math.hypot(pair0[0], pair0[1]) < 1e-6, `${JSON.stringify(pair0)} → ${JSON.stringify(pair1)}`);
+await page.keyboard.press('Control+z');
+check('Undo puts the pieces back', JSON.stringify(await pair()) === JSON.stringify(pair0) && (await fc(() => fc.doc.undoStack.at(-1)?.label)) !== 'Nest');
+const nestCr = await page.locator('#canvas').boundingBox();
+const ctxItems = await (async () => { const o = await fc(() => fc.view.toScreen([fc.doc.objects[1].x, fc.doc.objects[1].y])); await fc(() => fc.doc.select(fc.doc.objects.map((o) => o.id))); await page.mouse.click(nestCr.x + o[0], nestCr.y + o[1], { button: 'right' }); await page.waitForTimeout(100); const items = await fc(() => [...document.querySelectorAll('#ctx button')].map((b) => b.textContent)); await page.keyboard.press('Escape'); return items; })();
+check('the right-click menu has Nest, Edit nodes, and Combine', ['Nest…', 'Edit nodes', 'Combine'].every((w) => ctxItems.some((t) => t.startsWith(w))), ctxItems.join(' | '));
 
 // ---------- node editing ----------
 await fc(() => { fc.doc.objects = []; fc.doc.commit('clear'); });

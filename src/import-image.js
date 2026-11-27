@@ -1,12 +1,10 @@
-// PNG/JPG import: threshold to black and white, then trace outlines with ImageTracer.js.
-import ImageTracer from '../vendor/imagetracer.mjs';
-import { dToPaths } from './import-svg.js';
-import { scale } from './geom.js';
+// PNG/JPG import and tracing. The tracing itself (trace-core.js) runs in a Web Worker, so the
+// sliders stay smooth and only the newest settings are traced.
+import { TRACE_DEFAULTS, PAD } from './trace-core.js';
 
 const MAX_SIDE = 1400; // pixels; bigger images are scaled down before tracing
-const PAD = 2;
 
-export const TRACE_DEFAULTS = { threshold: 128, invert: false, smooth: 1, despeckle: 8, ppi: 150 };
+export { TRACE_DEFAULTS };
 
 export function loadImage(src) {
   return new Promise((resolve, reject) => {
@@ -33,9 +31,10 @@ export async function fileToDataURL(file) {
   } finally { URL.revokeObjectURL(url); }
 }
 
-/** Traces a stored image. Returns paths in inches, top-left at (0,0). */
-export async function traceImage(dataURL, opts = {}) {
-  const o = { ...TRACE_DEFAULTS, ...opts };
+/** The stored image's pixels with a white border of PAD pixels (cached per image). */
+const pixelCache = new Map();
+async function pixels(dataURL) {
+  if (pixelCache.has(dataURL)) return pixelCache.get(dataURL);
   const img = await loadImage(dataURL);
   const w = img.naturalWidth + PAD * 2, h = img.naturalHeight + PAD * 2;
   const c = document.createElement('canvas');
@@ -43,29 +42,64 @@ export async function traceImage(dataURL, opts = {}) {
   const g = c.getContext('2d', { willReadFrequently: true });
   g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
   g.drawImage(img, PAD, PAD);
-  const id = g.getImageData(0, 0, w, h), d = id.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-    const alpha = d[i + 3] / 255;
-    const v = lum * alpha + 255 * (1 - alpha);
-    let black = v < o.threshold;
-    if (o.invert) black = !black;
-    d[i] = d[i + 1] = d[i + 2] = black ? 0 : 255; d[i + 3] = 255;
+  const id = g.getImageData(0, 0, w, h);
+  const px = { width: w, height: h, data: id.data };
+  if (pixelCache.size > 6) pixelCache.delete(pixelCache.keys().next().value);
+  pixelCache.set(dataURL, px);
+  return px;
+}
+
+const optsKey = (o) => JSON.stringify(['mode', 'threshold', 'invert', 'smooth', 'despeckle', 'ppi', 'colors', 'dropBg', 'stack', 'overlap', 'stroke'].map((k) => o[k]));
+
+/**
+ * Runs traces in a worker. trace() resolves with layers [{ color, paths }], or with null when newer
+ * settings arrived before this one finished (only the newest trace matters).
+ */
+export class Tracer {
+  constructor() {
+    this.gen = 0; this.inflight = null; this.next = null; this.waiting = new Map(); this.cache = new Map(); this.worker = null; this.busy = false;
+    try {
+      this.worker = new Worker(new URL('./trace-worker.js', import.meta.url), { type: 'module' });
+      this.worker.onmessage = (e) => this.done(e.data);
+      this.worker.onerror = (e) => { console.warn('Trace worker failed; tracing on the main thread.', e.message); this.worker = null; this.failAll(); };
+    } catch { this.worker = null; }
+    this.onbusy = () => {};
   }
-  const svg = ImageTracer.imagedataToSVG(id, {
-    ltres: o.smooth, qtres: o.smooth, pathomit: o.despeckle, colorsampling: 0, numberofcolors: 2,
-    pal: [{ r: 0, g: 0, b: 0, a: 255 }, { r: 255, g: 255, b: 255, a: 255 }],
-    colorquantcycles: 1, blurradius: 0, linefilter: true, rightangleenhance: true, roundcoords: 2,
-    viewbox: true, desc: false, strokewidth: 0,
-  });
-  const m = scale(1 / o.ppi);
-  m[4] = -PAD / o.ppi; m[5] = -PAD / o.ppi;
-  const paths = [];
-  const re = /<path fill="rgb\(0,0,0\)"[^>]*?\sd="([^"]*)"/g;
-  let r, el = 0;
-  while ((r = re.exec(svg))) {
-    for (const p of dToPaths(r[1], m, 0.5 / o.ppi)) paths.push({ ...p, el, color: '#000000' });
-    el++;
+  failAll() { for (const [, w] of this.waiting) w.reject(new Error('Tracing stopped. Try again.')); this.waiting.clear(); }
+  post(job) { this.inflight = job.gen; this.worker.postMessage(job); }
+  done({ gen, layers, error }) {
+    this.inflight = null;
+    if (this.next) { const j = this.next; this.next = null; this.post(j); }
+    const w = this.waiting.get(gen);
+    this.waiting.delete(gen);
+    if (gen === this.gen) { this.busy = false; this.onbusy(false); }
+    if (!w) return;
+    if (error) { w.reject(new Error('Trace failed: ' + error)); return; }
+    this.remember(w.key, layers);
+    w.resolve(gen === this.gen ? layers : null);
   }
-  return paths.filter((p) => p.closed);
+  remember(key, layers) { this.cache.set(key, layers); if (this.cache.size > 12) this.cache.delete(this.cache.keys().next().value); }
+  async trace(dataURL, opts) {
+    const o = { ...TRACE_DEFAULTS, ...opts };
+    const key = dataURL.length + ':' + dataURL.slice(-64) + optsKey(o);
+    const gen = ++this.gen;
+    if (this.cache.has(key)) { this.busy = false; this.onbusy(false); return this.cache.get(key); }
+    const image = await pixels(dataURL);
+    if (gen !== this.gen) return null;
+    this.busy = true; this.onbusy(true);
+    if (!this.worker) {
+      const { traceAll } = await import('./trace-core.js');
+      const layers = traceAll(image, o);
+      this.remember(key, layers);
+      this.busy = false; this.onbusy(false);
+      return gen === this.gen ? layers : null;
+    }
+    return new Promise((resolve, reject) => {
+      // Only one trace runs at a time; a newer request replaces any that is still waiting.
+      if (this.next) { this.waiting.get(this.next.gen)?.resolve(null); this.waiting.delete(this.next.gen); this.next = null; }
+      this.waiting.set(gen, { resolve, reject, key });
+      const job = { gen, image: { width: image.width, height: image.height, data: image.data }, opts: o };
+      if (this.inflight) this.next = job; else this.post(job);
+    });
+  }
 }

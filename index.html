@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>FantastiCut</title>
   <meta name="theme-color" content="#1B1B1E">
+  <meta name="fantasticut-version" content="v0.1 build 2026-11-27 Phase 3">
   <link rel="icon" href="assets/fantasticut-icon-16.svg" type="image/svg+xml">
   <link rel="icon" href="assets/fantasticut-icon-32.png" sizes="32x32" type="image/png">
   <link rel="icon" href="assets/fantasticut-icon-16.png" sizes="16x16" type="image/png">
@@ -96,6 +97,7 @@
           <button class="tb" id="b-repeat" title="Make rows and columns of copies">Step and repeat</button>
           <button class="tb" id="b-nodes" title="Drag nodes and curve handles (or double-click the shape)">Edit nodes</button>
           <button class="tb" id="b-combine" title="Make the selected objects one object without welding">Combine</button>
+          <button class="tb" id="b-nest" title="Pack pieces close together to save vinyl">Nest</button>
         </div>
         <p class="hint">Right-click (or press and hold) anything for more.</p>
         <div class="btns" id="align-row">
@@ -161,14 +163,23 @@
 
       <section class="panel" id="p-trace" hidden>
         <h2>Trace</h2>
-        <label class="block">Threshold <output id="tr-th-v"></output><input id="tr-th" type="range" min="1" max="254"></label>
+        <label class="block">Mode<select id="tr-mode"><option value="bw">Black and white</option><option value="color">Colors (one layer per color)</option><option value="center">Centerline (line art)</option></select></label>
+        <label class="block" data-modes="bw center">Threshold <output id="tr-th-v"></output><input id="tr-th" type="range" min="1" max="254"></label>
+        <label class="block" data-modes="color">Colors <output id="tr-colors-v"></output><input id="tr-colors" type="range" min="2" max="8" step="1"></label>
+        <div class="row" data-modes="color"><label class="check" title="Leave out the color around the edge of the image"><input id="tr-bg" type="checkbox"> Remove background</label></div>
+        <div class="grid2" data-modes="color">
+          <label title="Overlap: lower colors run under the ones above, so small misalignment never shows a gap">Stacking<select id="tr-stack"><option value="overlap">Overlap</option><option value="exact">Exact edges</option></select></label>
+          <label title="How far lower colors run under the ones above">Overlap<input id="tr-overlap" type="number" min="0" step="0.01"></label>
+        </div>
+        <label class="block" data-modes="center" title="Blank or 0 = a single line (for a pen). A width makes a cuttable outline around each line.">Stroke width<input id="tr-stroke" type="number" min="0" step="0.01" placeholder="Pen line"></label>
         <label class="block">Smoothing <output id="tr-sm-v"></output><input id="tr-sm" type="range" min="0.2" max="6" step="0.1"></label>
         <label class="block">Remove specks <output id="tr-sp-v"></output><input id="tr-sp" type="range" min="0" max="200" step="1"></label>
         <div class="row">
-          <label class="check"><input id="tr-inv" type="checkbox"> Invert</label>
+          <label class="check" data-modes="bw center"><input id="tr-inv" type="checkbox"> Invert</label>
           <label class="check"><input id="tr-show" type="checkbox"> Show photo</label>
         </div>
-        <p class="hint">Darker pixels than the threshold become cut lines. A sharp, high-resolution logo traces best.</p>
+        <p class="hint" id="tr-status" aria-live="polite"></p>
+        <p class="hint">Moving a slider shows a preview; letting go keeps it (one Undo step). A sharp, high-resolution image traces best.</p>
       </section>
 
       <section class="panel" id="p-colors">
@@ -189,6 +200,7 @@
     <span id="st-sel"></span>
     <span id="st-saved" class="dim"></span>
     <button class="link" id="st-log">Log</button>
+    <span id="st-ver" class="dim">FantastiCut v0.1 · build 2026-11-27 Phase 3</span>
     <span class="spacer"></span>
     <span class="legal">&copy;2026 FantastiCut <a href="https://emfdprodco.com/" target="_blank" rel="noopener">EMFDPRODCO</a>. All rights Reserved. Hosted by <a href="https://ghostilla.com/" target="_blank" rel="noopener">gHostilla</a>. <a href="mailto:contact@emfdprodco.com?subject=FantastiCut">Contact</a>.</span>
   </footer>
@@ -270,7 +282,7 @@
   <dialog id="dlg-presets" class="dlg">
     <form method="dialog" class="dlg-head"><h2>Materials</h2><button class="tb icon" value="close" aria-label="Close">&times;</button></form>
     <p class="hint">Starting points for a 45&deg; blade. Run a test cut on each new roll: the triangle should weed cleanly, and the backing should show light scoring but not be cut through.</p>
-    <table class="ptable"><thead><tr><th>Name</th><th>Speed</th><th>Force</th><th>Passes</th><th>Offset mm</th><th>Overcut mm</th><th>Mirror</th><th>Blade depth note</th><th></th></tr></thead><tbody id="p-rows"></tbody></table>
+    <table class="ptable"><thead><tr><th>Name</th><th>Speed</th><th>Force</th><th>Passes</th><th>Offset mm</th><th>Overcut mm</th><th>Mirror</th><th title="The material has a direction (brushed, carbon fiber, some reflective): nesting never turns pieces">No rotation</th><th>Blade depth note</th><th></th></tr></thead><tbody id="p-rows"></tbody></table>
     <div class="dlg-foot"><button class="tb" id="p-add">Add material</button><button class="tb" id="p-reset">Restore defaults</button><span class="spacer"></span><button class="cutbtn" id="p-done">Done</button></div>
   </dialog>
 
@@ -314,7 +326,7 @@
   <!-- About -->
   <dialog id="dlg-about" class="dlg">
     <form method="dialog" class="dlg-head"><h2>About FantastiCut</h2><button class="tb icon" value="close" aria-label="Close">&times;</button></form>
-    <p>A clean, license-key-free cutting app for the USCutter MH 871 and other HPGL vinyl cutters. Version <span id="ver"></span>.</p>
+    <p>A clean, license-key-free cutting app for the USCutter MH 871 and other HPGL vinyl cutters. Version <span id="ver">v0.1 (build 2026-11-27 Phase 3)</span>.</p>
     <h3>Shortcuts</h3>
     <table class="keys">
       <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>Undo / Redo</td></tr>
@@ -329,13 +341,14 @@
       <tr><td>Ctrl+Enter</td><td>Cut</td></tr>
       <tr><td>Right-click, or press and hold</td><td>Menu: weld, unweld, offset, step and repeat, and more</td></tr>
       <tr><td>Ctrl+G / Ctrl+Shift+G</td><td>Weld / Unweld</td></tr>
+      <tr><td>Right-click &rarr; Nest</td><td>Pack pieces close together to save vinyl</td></tr>
       <tr><td>Double-click a shape</td><td>Edit nodes (Esc or Enter when done)</td></tr>
       <tr><td>Double-click a line / a node</td><td>Add a node / switch corner and smooth</td></tr>
     </table>
     <h3>From EMFDPRODCO</h3>
     <p><a href="https://emfdprodco.com/" target="_blank" rel="noopener">EMFDPRODCO.com</a> &middot; Hosted by <a href="https://ghostilla.com/" target="_blank" rel="noopener">gHostilla</a></p>
     <h3>Open source inside</h3>
-    <p class="hint">opentype.js (MIT), ImageTracer.js (Unlicense), dxf-parser (MIT), svgpath (MIT), Clipper2 (clipper2-ts, Boost Software License). Fonts: Outfit (brand), Bebas Neue, Oswald, Space Grotesk, Pacifico (SIL Open Font License).</p>
+    <p class="hint">opentype.js (MIT), ImageTracer.js (Unlicense), dxf-parser (MIT), svgpath (MIT), Clipper2 (clipper2-ts, Boost Software License), fit-curve (MIT). Nesting follows the method of SVGnest by Jack Qiao (MIT). Fonts: Outfit (brand), Bebas Neue, Oswald, Space Grotesk, Pacifico (SIL Open Font License).</p>
     <p class="hint"><a href="terms.html">Terms</a> &middot; <a href="privacy.html">Privacy</a></p>
   </dialog>
 
@@ -356,6 +369,35 @@
     </div>
     <dl class="facts" id="r-facts"></dl>
     <div class="dlg-foot"><span class="spacer"></span><button class="tb" id="r-cancel">Cancel</button><button class="cutbtn" id="r-ok">Make copies</button></div>
+  </dialog>
+
+  <!-- Nest -->
+  <dialog id="dlg-nest" class="dlg wide">
+    <form method="dialog" class="dlg-head"><h2>Nest</h2><button class="tb icon" value="close" aria-label="Close">&times;</button></form>
+    <div class="cut-body">
+      <div class="cut-left">
+        <p class="hint" id="ns-what"></p>
+        <label class="block">Method<select id="ns-method"><option value="fast">Fast (rectangles)</option><option value="best">Best fit (true shape)</option></select></label>
+        <div class="grid2">
+          <label title="Space kept between pieces, and from the roll edges">Spacing<input id="ns-space" type="number" min="0" step="0.025"></label>
+          <label>Rotation<select id="ns-rot"><option value="0">None</option><option value="90">90&deg; steps</option><option value="45">45&deg; steps</option><option value="30">30&deg; steps</option><option value="15">15&deg; steps (slow)</option></select></label>
+        </div>
+        <label class="check" title="Put small pieces inside the holes of bigger ones (Best fit only)"><input id="ns-holes" type="checkbox"> Part in part (use the holes of bigger pieces)</label>
+        <p class="hint" id="ns-note"></p>
+        <p class="hint">Pieces that overlap move together, so layered colors stay lined up. Borders (offsets) move with their originals. Best fit keeps trying better arrangements until you press Stop; the best one so far is kept.</p>
+      </div>
+      <div class="cut-right">
+        <canvas id="ns-preview" width="480" height="300" aria-label="Nesting preview"></canvas>
+        <dl class="facts" id="ns-facts"></dl>
+        <p class="hint" id="ns-status" aria-live="polite"></p>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <button class="tb" id="ns-start">Start</button>
+      <span class="spacer"></span>
+      <button class="tb" id="ns-cancel">Cancel</button>
+      <button class="cutbtn" id="ns-apply">Apply</button>
+    </div>
   </dialog>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>

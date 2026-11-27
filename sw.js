@@ -1,12 +1,18 @@
 // Offline support: every file is fetched fresh when online and served from cache when offline.
-const CACHE = 'fantasticut-v2';
+const CACHE = 'fantasticut-v3';
+// Every deployed file. tests/run.mjs fails if a file is missing from this list or the list names a missing file.
 const CORE = [
   './', 'index.html', 'app.css', 'styles.css', 'manifest.webmanifest', 'terms.html', 'privacy.html',
-  'assets/logo-mark.svg', 'assets/icon-192.png', 'assets/icon-512.png',
-  'src/app.js', 'src/clip.js', 'src/doc.js', 'src/geom.js', 'src/hpgl.js', 'src/import-dxf.js', 'src/import-image.js',
-  'src/import-svg.js', 'src/job.js', 'src/presets.js', 'src/serial.js', 'src/store.js', 'src/text.js', 'src/view.js',
-  'vendor/clipper2.mjs', 'vendor/dxf-parser.mjs', 'vendor/imagetracer.mjs', 'vendor/opentype.mjs', 'vendor/svgpath.mjs',
-  'fonts/bebas-neue.woff', 'fonts/oswald-bold.woff', 'fonts/pacifico.woff', 'fonts/space-grotesk-bold.woff',
+  'assets/fantasticut-decal-1color.svg', 'assets/fantasticut-icon-16.png', 'assets/fantasticut-icon-16.svg',
+  'assets/fantasticut-icon-192.png', 'assets/fantasticut-icon-24.svg', 'assets/fantasticut-icon-32.png',
+  'assets/fantasticut-icon-512.png', 'assets/fantasticut-icon-teal.svg', 'fonts/bebas-neue.woff',
+  'fonts/oswald-bold.woff', 'fonts/outfit-400.woff2', 'fonts/outfit-500.woff2', 'fonts/outfit-600.woff2',
+  'fonts/pacifico.woff', 'fonts/space-grotesk-bold.woff', 'src/app.js', 'src/centerline.js', 'src/clip.js',
+  'src/doc.js', 'src/geom.js', 'src/hpgl.js', 'src/import-dxf.js', 'src/import-image.js', 'src/import-svg.js',
+  'src/job.js', 'src/nest-core.js', 'src/nest-worker.js', 'src/nodes.js', 'src/presets.js', 'src/serial.js',
+  'src/store.js', 'src/text.js', 'src/trace-core.js', 'src/trace-worker.js', 'src/view.js', 'vendor/clipper2.mjs',
+  'vendor/dxf-parser.mjs', 'vendor/fit-curve.mjs', 'vendor/imagetracer.mjs', 'vendor/opentype.mjs',
+  'vendor/svgpath.mjs',
 ];
 
 self.addEventListener('install', (e) => {

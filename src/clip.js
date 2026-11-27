@@ -84,3 +84,10 @@ export function clipToRect(paths, r) {
   const res = run(ClipType.Intersection, FillRule.EvenOdd, paths.filter((p) => p.closed), rect, paths.filter((p) => !p.closed));
   return [...res.closed, ...res.open];
 }
+
+/** Region operations on closed paths (each side read with the even-odd rule). */
+export const union = (a, b = []) => run(ClipType.Union, FillRule.NonZero, [...region(a), ...region(b)]).closed;
+export const intersect = (a, b) => run(ClipType.Intersection, FillRule.NonZero, region(a), region(b)).closed;
+export const difference = (a, b) => run(ClipType.Difference, FillRule.NonZero, region(a), region(b)).closed;
+/** Total filled area of a region, in square inches. */
+export const area = (paths) => Math.abs(region(paths).reduce((s, p) => s + signedArea(p.pts), 0));

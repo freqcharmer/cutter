@@ -132,11 +132,12 @@ export class View {
 
     // objects
     for (const o of this.doc.objects) {
+      if (this.hidden?.has(o.id)) continue; // being previewed (trace settings)
       const sel = this.doc.selection.has(o.id);
       const wp = worldPaths(o);
       const b = bbox(wp);
       const outside = b && (b.y1 > s.cutWidth + 0.001 || b.y < -0.001 || b.x < -0.001);
-      if (o.kind === 'trace' && o.trace?.showImage && this.images.get(o.id)) {
+      if (o.kind === 'trace' && o.trace?.showImage && o.trace.primary !== false && this.images.get(o.id)) {
         const img = this.images.get(o.id), t = o.trace;
         g.save();
         const m = mul([z, 0, 0, z, this.ox, this.oy], objMatrix(o));

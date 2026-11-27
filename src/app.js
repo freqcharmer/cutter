@@ -1,19 +1,23 @@
 // FantastiCut app: wires the document, canvas, panels, dialogs, and cutter together.
 import { Doc, newId, worldPaths, worldBox, groupBox, localBox } from './doc.js';
 import { View } from './view.js';
-import { center, objMatrix, apply, bbox, pointInPoly, signedArea, round, mul, invert, translate, transformPaths } from './geom.js';
-import { weld as weldPaths, offset as offsetPaths } from './clip.js';
+import { center, objMatrix, apply, bbox, pointInPoly, signedArea, round, mul, invert, translate, rotate, transformPaths } from './geom.js';
+import { weld as weldPaths, offset as offsetPaths, union as clipUnion } from './clip.js';
 import { fitNodes, refresh, insertNode, setType, setSegment, breakAt, joinEnds, classify } from './nodes.js';
 import { lsGet, lsSet } from './store.js';
 import { parseSVG } from './import-svg.js';
 import { parseDXF } from './import-dxf.js';
-import { fileToDataURL, traceImage, TRACE_DEFAULTS, loadImage } from './import-image.js';
+import { fileToDataURL, Tracer, TRACE_DEFAULTS, loadImage } from './import-image.js';
 import { listFonts, loadInstalledFonts, uploadFont, getFont, textToPaths, TEXT_DEFAULTS, localFontsSupported, BUNDLED } from './text.js';
 import { loadPresets, savePresets, loadSettings, saveSettings, DEFAULT_PRESETS } from './presets.js';
 import { prepareJob, planJob, testPattern, JOB_DEFAULTS } from './job.js';
+import { rectPack } from './nest-core.js';
+import { region, intersect as clipIntersect, area as clipArea } from './clip.js';
 import { Cutter, supported as serialSupported } from './serial.js';
 
-export const VERSION = '2.0 (Phase 2)';
+// Version: v0.1 until E's first real test cut, then 1.0. BUILD changes with every deploy (also in index.html).
+export const VERSION = 'v0.1';
+export const BUILD = '2026-11-27 Phase 3';
 const $ = (id) => document.getElementById(id);
 
 // ---------- state ----------
@@ -147,9 +151,11 @@ async function importFile(file) {
     toast('Tracing image…', { ms: 1500 });
     const img = await fileToDataURL(file);
     const ppi = Math.max(100, Math.round(img.width / 8));
-    const trace = { ...TRACE_DEFAULTS, ppi, dataURL: img.dataURL, showImage: false };
-    const paths = await traceImage(img.dataURL, trace);
-    o = makeObject('trace', baseName(file.name || 'Pasted image'), paths.length ? paths : [{ pts: [[0, 0], [0.01, 0]], closed: false }], { trace });
+    const trace = { ...TRACE_DEFAULTS, ppi, dataURL: img.dataURL, showImage: false, baseName: baseName(file.name || 'Pasted image') };
+    let layers = null;
+    while (!layers) layers = await tracer.trace(img.dataURL, trace); // null only if another trace jumped in
+    const paths = layers[0]?.paths || [];
+    o = makeObject('trace', trace.baseName, paths.length ? paths : [{ pts: [[0, 0], [0.01, 0]], closed: false }], { trace });
     view.images.set(o.id, await loadImage(img.dataURL));
     if (!paths.length) toast('Nothing traced at this threshold. Try moving the Threshold slider or ticking Invert.');
   } else {
@@ -225,30 +231,116 @@ function renderFontOptions() {
 }
 
 // ---------- trace ----------
-let traceTimer = 0;
-function updateTrace(change) {
-  const o = single('trace');
-  if (!o) return;
-  Object.assign(o.trace, change);
-  refreshTraceOutputs(o);
-  clearTimeout(traceTimer);
-  traceTimer = setTimeout(run(async () => {
-    const paths = await traceImage(o.trace.dataURL, o.trace);
-    if (paths.length) setSource(o, paths);
-    else toast('Nothing traced at this threshold.');
-    doc.commit('Trace settings');
-    view.redraw();
-  }), 250);
+// Tracing runs in a worker (see import-image.js). While a slider moves, the new trace shows as a
+// preview over the design; letting go records it as one undo step. "Colors" makes one object per
+// color (a trace group that re-traces together).
+const tracer = new Tracer();
+let traceDraft = null; // { id, t: settings, gm: source→world matrix, layers, commit }
+const TRACE_MODES = { bw: 'Black and white', color: 'Colors', center: 'Centerline' };
+
+function traceGroup(o) {
+  return o?.trace?.group ? doc.objects.filter((x) => x.kind === 'trace' && x.trace?.group === o.trace.group) : o ? [o] : [];
 }
-function refreshTraceOutputs(o) {
-  $('tr-th-v').textContent = o.trace.threshold;
-  $('tr-sm-v').textContent = o.trace.smooth;
-  $('tr-sp-v').textContent = o.trace.despeckle;
+/** The trace the panel works on: one trace object, or every object of one trace group. */
+function traceTarget() {
+  const sel = doc.selected();
+  if (!sel.length || !sel.every((o) => o.kind === 'trace' && o.trace)) return null;
+  const g = sel[0].trace.group;
+  if (sel.length > 1 && (!g || !sel.every((o) => o.trace.group === g))) return null;
+  return traceGroup(sel[0])[0];
+}
+const traceSettings = (o) => ({ ...TRACE_DEFAULTS, ...o.trace });
+
+function setTraceStatus(msg) { $('tr-status').textContent = msg || ''; }
+
+async function updateTrace(change, commit = false) {
+  const o = traceTarget();
+  if (!o) return;
+  const same = traceDraft?.id === o.id;
+  const t = { ...(same ? traceDraft.t : traceSettings(o)), ...change };
+  traceDraft = { id: o.id, t, gm: mul(objMatrix(o), translate(-o.cx, -o.cy)), layers: same ? traceDraft.layers : null, commit: commit || (same && traceDraft.commit) };
+  view.hidden = new Set(traceGroup(o).map((x) => x.id));
+  fillTraceControls(t);
+  setTraceStatus('Tracing…');
+  let layers;
+  try { layers = await tracer.trace(o.trace.dataURL, t); } catch (e) { clearTraceDraft(); toast(e.message, { error: true }); return; }
+  if (!layers || traceDraft?.id !== o.id || traceDraft.t !== t) return; // newer settings are on the way
+  if (traceDraft.commit) { clearTraceDraft(); applyTrace(o, layers, t); return; }
+  traceDraft.layers = layers;
+  view.overlay = drawTracePreview;
+  setTraceStatus(`Preview: ${describeLayers(layers)}. Let go to keep it.`);
+  view.redraw();
+}
+function describeLayers(layers) {
+  const L = layers.filter((l) => l.paths.length), n = L.reduce((a, l) => a + l.paths.length, 0);
+  return L.length > 1 ? `${L.length} color layers, ${n} outlines` : `${n} outline${n === 1 ? '' : 's'}`;
+}
+function clearTraceDraft() {
+  traceDraft = null; view.overlay = null; view.hidden = null; setTraceStatus(''); view.redraw();
+}
+function drawTracePreview(g, v, C) {
+  const d = traceDraft;
+  if (!d?.layers) return;
+  for (const L of d.layers) {
+    const p2 = new Path2D();
+    for (const p of L.paths) {
+      p.pts.forEach((pt, i) => { const [x, y] = v.toScreen(apply(d.gm, pt)); i ? p2.lineTo(x, y) : p2.moveTo(x, y); });
+      if (p.closed) p2.closePath();
+    }
+    const col = /^#([0-9a-f]{6})$/i.test(L.color) && L.color.toLowerCase() !== '#000000' ? L.color : C.text;
+    g.globalAlpha = 0.3; g.fillStyle = col; g.fill(p2, 'evenodd');
+    g.globalAlpha = 1; g.strokeStyle = C.accent; g.lineWidth = 1; g.setLineDash([5, 3]); g.stroke(p2); g.setLineDash([]);
+  }
+}
+
+/** Replaces a trace (or trace group) with new results: one object per layer, in the same place. */
+function applyTrace(o, layers, t) {
+  const group = traceGroup(o);
+  const L = layers.filter((l) => l.paths.length);
+  if (!L.length) { toast('Nothing traced with these settings. Try the Threshold slider, Invert, or fewer specks removed.'); refreshPanels(); return; }
+  const gm = mul(objMatrix(o), translate(-o.cx, -o.cy));
+  const base = t.baseName || o.name.replace(/ \([^)]*\)$/, '');
+  const multi = L.length > 1;
+  const gid = multi ? (o.trace.group || newId()) : undefined;
+  const made = L.map((layer, i) => {
+    const n = { id: group[i]?.id || newId(), kind: 'trace', name: multi ? `${base} (${layerName(layer.color)})` : base, x: 0, y: 0, sx: 1, sy: 1, rot: 0, cx: null,
+      color: multi ? layer.color : group.length > 1 ? '#000000' : colorKey(o.color),
+      trace: { ...t, baseName: base, group: gid, layer: multi ? layer.color : undefined, primary: i === 0 } };
+    if (!multi) { delete n.trace.group; delete n.trace.layer; }
+    setSource(n, layer.paths);
+    setMatrix(n, mul(gm, translate(n.cx, n.cy)));
+    return n;
+  });
+  const idx = Math.min(...group.map((x) => doc.objects.indexOf(x)));
+  const img = view.images.get(o.id);
+  doc.remove(group.map((x) => x.id));
+  doc.objects.splice(idx, 0, ...made);
+  if (img) for (const n of made) view.images.set(n.id, img);
+  doc.select(made.map((n) => n.id));
+  doc.commit(t.mode !== traceSettings(o).mode ? `Trace: ${TRACE_MODES[t.mode]}` : 'Trace settings');
+  setTraceStatus(describeLayers(L) + '.');
+  if (multi && group.length < 2) toast(`Traced into ${L.length} color layers, one object each. They are listed under Color layers.`);
+}
+
+function fillTraceControls(t) {
+  $('tr-mode').value = t.mode;
+  for (const el of document.querySelectorAll('#p-trace [data-modes]')) el.hidden = !el.dataset.modes.split(' ').includes(t.mode);
+  $('tr-th').value = t.threshold; $('tr-sm').value = t.smooth; $('tr-sp').value = t.despeckle;
+  $('tr-inv').checked = !!t.invert; $('tr-colors').value = t.colors; $('tr-bg').checked = !!t.dropBg;
+  $('tr-stack').value = t.stack;
+  if (document.activeElement !== $('tr-overlap')) $('tr-overlap').value = fmt(t.overlap);
+  if (document.activeElement !== $('tr-stroke')) $('tr-stroke').value = t.stroke > 0 ? fmt(t.stroke) : '';
+  $('tr-overlap').disabled = t.stack !== 'overlap';
+  $('tr-th-v').textContent = t.threshold; $('tr-sm-v').textContent = t.smooth; $('tr-sp-v').textContent = t.despeckle; $('tr-colors-v').textContent = t.colors;
 }
 async function loadTraceImages() {
+  const byURL = new Map();
   for (const o of doc.objects) {
     if (o.kind === 'trace' && o.trace?.dataURL && !view.images.has(o.id)) {
-      try { view.images.set(o.id, await loadImage(o.trace.dataURL)); } catch {}
+      try {
+        if (!byURL.has(o.trace.dataURL)) byURL.set(o.trace.dataURL, await loadImage(o.trace.dataURL));
+        view.images.set(o.id, byURL.get(o.trace.dataURL));
+      } catch {}
     }
   }
   view.redraw();
@@ -277,7 +369,9 @@ function refreshPanels(liveOnly = false) {
     $('n-info').textContent = `${total} node${total === 1 ? '' : 's'} in ${lists.length} path${lists.length === 1 ? '' : 's'} · ${ne.sel.size} picked`;
   }
   $('p-text').hidden = !!ne || !(one && one.kind === 'text');
-  $('p-trace').hidden = !!ne || !(one && one.kind === 'trace');
+  const tt = traceTarget();
+  $('p-trace').hidden = !!ne || !tt;
+  if (traceDraft && traceDraft.id !== tt?.id) clearTraceDraft();
   $('p-offset').hidden = !!ne || !(one && one.kind === 'offset' && one.offset?.linked);
   $('f-width').textContent = fmtU(settings.cutWidth);
   $('f-count').textContent = doc.objects.length;
@@ -321,10 +415,9 @@ function refreshPanels(liveOnly = false) {
     const names = one.offset.src.map((id) => doc.get(id)?.name).filter(Boolean);
     $('of-status').textContent = `Linked to ${names.length === 1 ? `"${names[0]}"` : `${names.length} objects`}: it updates when you move, resize, or edit the original.${one.empty ? ' Nothing is left at this distance; make it smaller.' : ''}`;
   }
-  if (!liveOnly && one?.kind === 'trace') {
-    $('tr-th').value = one.trace.threshold; $('tr-sm').value = one.trace.smooth; $('tr-sp').value = one.trace.despeckle;
-    $('tr-inv').checked = !!one.trace.invert; $('tr-show').checked = !!one.trace.showImage;
-    refreshTraceOutputs(one);
+  if (!liveOnly && tt && !traceDraft) {
+    fillTraceControls(traceSettings(tt));
+    $('tr-show').checked = !!tt.trace.showImage;
   }
   if (!liveOnly) { renderLayers(); renderColorLayers(); }
   $('btn-undo').disabled = !doc.undoStack.length;
@@ -395,7 +488,12 @@ function flip(axis) {
  */
 function cloneObjects(objs, dx = 0, dy = 0) {
   const map = new Map();
-  const copies = objs.map((o) => { const c = structuredClone(o); c.id = newId(); map.set(o.id, c.id); c.x += dx; c.y += dy; return c; });
+  const groups = new Map(); // a copied trace group becomes its own group
+  const copies = objs.map((o) => {
+    const c = structuredClone(o); c.id = newId(); map.set(o.id, c.id); c.x += dx; c.y += dy;
+    if (c.trace?.group) { if (!groups.has(c.trace.group)) groups.set(c.trace.group, newId()); c.trace.group = groups.get(c.trace.group); }
+    return c;
+  });
   for (const c of copies) {
     if (c.kind !== 'offset' || !c.offset) continue;
     if (c.offset.linked && c.offset.src.every((id) => map.has(id))) { c.offset.src = c.offset.src.map((id) => map.get(id)); c.offset.hash = ''; }
@@ -950,6 +1048,198 @@ function combineSelection() {
   toast(`Combined ${sel.length} objects into one${layerColors(sel).length > 1 ? `, all ${layerName(c.color)}` : ''}. Ungroup splits it again.`);
 }
 
+
+// ---------- nesting ----------
+// Units: objects that move together (overlapping pieces, and borders with their originals).
+let nest = null; // { units, fixed, skipped, x0, before, result: { place: [{ unit, deg, tx, ty }], unplaced }, worker }
+let nestOpts = { method: 'fast', spacing: 0.125, rot: '90', holes: false, ...lsGet('fc.nest', {}) };
+
+function nestUnits(objs) {
+  const ids = new Set(objs.map((o) => o.id));
+  for (const f of followersOf(objs)) { if (!ids.has(f.id)) { objs.push(f); ids.add(f.id); } }
+  const movable = objs.filter((o) => o.paths.some((p) => p.closed));
+  const skipped = objs.filter((o) => !o.paths.some((p) => p.closed));
+  const parent = movable.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const join = (a, b) => { parent[find(a)] = find(b); };
+  const idx = new Map(movable.map((o, i) => [o.id, i]));
+  const geo = movable.map((o) => { const wp = worldPaths(o).filter((p) => p.closed); return { wp, box: bbox(wp) }; });
+  movable.forEach((o, i) => { if (o.kind === 'offset' && o.offset?.linked) for (const s of o.offset.src) if (idx.has(s)) join(i, idx.get(s)); });
+  for (let i = 0; i < movable.length; i++) for (let j = i + 1; j < movable.length; j++) {
+    const a = geo[i].box, b = geo[j].box;
+    if (!a || !b || a.x > b.x1 || b.x > a.x1 || a.y > b.y1 || b.y > a.y1 || find(i) === find(j)) continue;
+    if (clipArea(clipIntersect(geo[i].wp, geo[j].wp)) > 1e-5) join(i, j);
+  }
+  const groups = new Map();
+  movable.forEach((o, i) => { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(i); });
+  const units = [...groups.values()].map((list, k) => {
+    const wp = list.flatMap((i) => geo[i].wp);
+    const reg = region(clipUnion(wp));
+    return { id: k, objs: list.map((i) => movable[i]), paths: reg.map((p) => p.pts), outline: reg, box: bbox(reg) };
+  });
+  return { units, skipped };
+}
+
+function nestRotations() {
+  const p = presets.find((x) => x.id === settings.presetId);
+  if (p?.noRotate) return { list: [0], locked: p.name };
+  const step = +nestOpts.rot;
+  if (!step) return { list: [0] };
+  const list = [];
+  for (let a = 0; a < 360; a += step) list.push(a);
+  return { list };
+}
+
+function openNest() {
+  if (!doc.objects.length) { toast('Import a design or add text first.'); return; }
+  const objs = doc.selection.size ? doc.selected() : doc.objects.slice();
+  const { units, skipped } = nestUnits(objs);
+  if (units.length < 2) { toast(units.length ? 'Nesting needs two or more separate pieces. (Pieces that overlap count as one.)' : 'Nothing to nest: it needs closed shapes.'); return; }
+  const moving = new Set(units.flatMap((u) => u.objs.map((o) => o.id)));
+  const fixed = doc.objects.filter((o) => !moving.has(o.id) && o.paths.some((p) => p.closed)).map((o, i) => ({ id: i, paths: region(worldPaths(o).filter((p) => p.closed)).map((p) => p.pts), box: worldBox(o) }));
+  const all = units.reduce((b, u) => unionBoxSafe(b, u.box), null);
+  nest = { units, fixed, skipped, x0: Math.max(0, all.x), before: all.x1 - Math.max(0, all.x), result: null, worker: null };
+  $('ns-method').value = nestOpts.method; $('ns-space').value = fmt(nestOpts.spacing); $('ns-rot').value = nestOpts.rot; $('ns-holes').checked = !!nestOpts.holes;
+  const rots = nestRotations();
+  $('ns-rot').disabled = !!rots.locked;
+  $('ns-what').textContent = `${units.length} pieces to nest${doc.selection.size ? ' (the selection)' : ' (everything)'}${fixed.length ? `, around ${fixed.length} object${fixed.length > 1 ? 's' : ''} that stay put` : ''}.`;
+  const notes = [];
+  if (rots.locked) notes.push(`Rotation is off: "${rots.locked}" is marked No rotation in Materials.`);
+  if (skipped.length) notes.push(`${skipped.length} object${skipped.length > 1 ? 's' : ''} of open lines (such as weed lines) stay where they are; delete or redo them after nesting.`);
+  $('ns-note').textContent = notes.join(' ');
+  $('dlg-nest').showModal();
+  runNest();
+}
+const unionBoxSafe = (a, b) => (!a ? b : !b ? a : { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1), w: Math.max(a.x1, b.x1) - Math.min(a.x, b.x), h: Math.max(a.y1, b.y1) - Math.min(a.y, b.y) });
+
+function readNestOpts() {
+  const sp = parseFloat($('ns-space').value) / k();
+  nestOpts = { method: $('ns-method').value, spacing: Number.isFinite(sp) && sp >= 0 ? round(sp, 4) : 0.125, rot: $('ns-rot').value, holes: $('ns-holes').checked };
+  lsSet('fc.nest', nestOpts);
+}
+const nestStrip = () => {
+  const m = settings.margin, s = nestOpts.spacing;
+  return { x0: nest.x0 - s / 2, y0: m - s / 2, y1: settings.cutWidth - m + s / 2 };
+};
+
+function stopNestWorker() { if (nest?.worker) { nest.worker.terminate(); nest.worker = null; } }
+
+/** Fast mode packs right away; Best fit starts the worker. */
+function runNest() {
+  readNestOpts();
+  stopNestWorker();
+  nest.result = null;
+  const fast = nestOpts.method === 'fast';
+  $('ns-holes').disabled = fast;
+  $('ns-start').hidden = fast;
+  if (fast) {
+    const s = nestOpts.spacing, rot = nestRotations().list.some((a) => a % 180 === 90);
+    const items = nest.units.map((u) => ({ id: u.id, w: u.box.w + s, h: u.box.h + s }));
+    const fixedR = nest.fixed.map((f) => ({ x: f.box.x - s / 2, y: f.box.y - s / 2, w: f.box.w + s, h: f.box.h + s }));
+    const r = rectPack(items, nestStrip(), { rotate: rot, fixed: fixedR });
+    nest.result = {
+      place: r.placements.map((p) => {
+        const u = nest.units[p.id], deg = p.rot90 ? 90 : 0;
+        const rb = rotatedBox(u, deg);
+        return { unit: p.id, deg, tx: p.x + s / 2 - rb.x, ty: p.y + s / 2 - rb.y };
+      }),
+      unplaced: r.unplaced,
+    };
+    setNestStatus('Packed by bounding boxes. Best fit usually saves more on odd shapes.');
+    showNest();
+  } else {
+    setNestStatus('Press Start to search for the tightest fit.');
+    $('ns-start').textContent = 'Start';
+    showNest();
+  }
+}
+function rotatedBox(u, deg) {
+  const R = rotate(deg);
+  return bbox(u.outline.map((p) => ({ pts: p.pts.map((q) => apply(R, q)) })));
+}
+function startBestFit() {
+  if (nest.worker) { // Stop: keep the best so far
+    stopNestWorker();
+    $('ns-start').textContent = 'Start';
+    setNestStatus(nest.result ? `Stopped. Kept the best result (${nest.evals} arrangements tried).` : 'Stopped before a result was found.');
+    return;
+  }
+  readNestOpts();
+  const w = new Worker(new URL('./nest-worker.js', import.meta.url), { type: 'module' });
+  nest.worker = w; nest.evals = 0;
+  $('ns-start').textContent = 'Stop';
+  setNestStatus('Searching…');
+  w.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === 'best') {
+      nest.result = { place: m.placements.map((p) => ({ unit: p.id, deg: p.deg, tx: (p.x - p.minx) / 10000, ty: (p.y - p.miny) / 10000 })), unplaced: m.unplaced };
+      nest.evals = m.evals;
+      showNest();
+    }
+    if (m.type === 'progress') { nest.evals = m.evals; setNestStatus(`Searching… ${m.evals} arrangements tried. Stop keeps the best one.`); }
+    if (m.type === 'done') { stopNestWorker(); $('ns-start').textContent = 'Start'; setNestStatus(`Done: ${m.evals} arrangements tried; this is the best.`); }
+    if (m.type === 'error') { stopNestWorker(); $('ns-start').textContent = 'Start'; setNestStatus('Nesting failed: ' + m.message); }
+  };
+  w.onerror = (e) => { stopNestWorker(); $('ns-start').textContent = 'Start'; setNestStatus('Nesting failed: ' + (e.message || 'worker error')); };
+  w.postMessage({
+    type: 'start', spacing: nestOpts.spacing, rotations: nestRotations().list, holes: nestOpts.holes,
+    units: nest.units.map((u) => ({ id: u.id, paths: u.paths })), fixed: nest.fixed.map((f) => ({ id: f.id, paths: f.paths })), strip: nestStrip(),
+  });
+}
+function setNestStatus(t) { $('ns-status').textContent = t; }
+const placeMatrix = (p) => { const R = rotate(p.deg); R[4] = p.tx; R[5] = p.ty; return R; };
+
+/** Draws the preview and the vinyl length before and after. */
+function showNest() {
+  const c = $('ns-preview'), g = c.getContext('2d'), W = c.width, H = c.height;
+  g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--roll'); g.fillRect(0, 0, W, H);
+  const res = nest.result;
+  const after = res ? res.place.map((p) => ({ p, outline: nest.units[p.unit].outline.map((q) => q.pts.map((pt) => apply(placeMatrix(p), pt))) })) : [];
+  let x1 = nest.x0 + 1;
+  for (const a of after) for (const q of a.outline) for (const [x] of q) x1 = Math.max(x1, x);
+  const len = res ? x1 - nest.x0 : null;
+  const span = Math.max(len || 0, nest.before, 1) + nest.x0 + 0.5;
+  const z = Math.min((W - 16) / span, (H - 16) / settings.cutWidth), S = ([x, y]) => [8 + x * z, 8 + y * z];
+  g.strokeStyle = '#58A4B0'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(8, 8); g.lineTo(W, 8); g.moveTo(8, 8 + settings.cutWidth * z); g.lineTo(W, 8 + settings.cutWidth * z); g.stroke();
+  const poly = (pts) => { g.beginPath(); pts.forEach((pt, i) => { const [x, y] = S(pt); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath(); };
+  g.fillStyle = 'rgba(169,188,208,0.25)';
+  for (const f of nest.fixed) for (const p of f.paths) { poly(p); g.fill('evenodd'); }
+  for (const a of after) {
+    const col = nest.units[a.p.unit].objs[0].color;
+    g.fillStyle = col && col !== '#000000' ? col + '88' : 'rgba(216,219,226,0.55)';
+    g.strokeStyle = '#D8DBE2'; g.lineWidth = 1;
+    const p2 = new Path2D();
+    for (const q of a.outline) { q.forEach((pt, i) => { const [x, y] = S(pt); i ? p2.lineTo(x, y) : p2.moveTo(x, y); }); p2.closePath(); }
+    g.fill(p2, 'evenodd'); g.stroke(p2);
+  }
+  if (res) { g.strokeStyle = '#E07A5F'; g.setLineDash([4, 3]); g.beginPath(); g.moveTo(...S([x1, 0])); g.lineTo(...S([x1, settings.cutWidth])); g.stroke(); g.setLineDash([]); }
+  const f = $('ns-facts'); f.textContent = '';
+  const rows = [['Vinyl length now', fmtU(nest.before)]];
+  if (res) {
+    const saved = nest.before - len;
+    rows.push(['After nesting', fmtU(len)], [saved >= 0 ? 'Saves' : 'Uses more', `${fmtU(Math.abs(saved))} (${Math.round((Math.abs(saved) / nest.before) * 100)}%)`]);
+    if (res.unplaced.length) rows.push(['Too big for the roll', `${res.unplaced.length} piece${res.unplaced.length > 1 ? 's' : ''} (left where they are)`]);
+  }
+  for (const [a, b] of rows) { const dt = document.createElement('dt'); dt.textContent = a; const dd = document.createElement('dd'); dd.textContent = b; f.append(dt, dd); }
+  nest.after = len;
+  $('ns-apply').disabled = !res || !res.place.length;
+}
+
+function applyNest() {
+  if (!nest?.result) return;
+  stopNestWorker();
+  for (const p of nest.result.place) {
+    const M = placeMatrix(p);
+    for (const o of nest.units[p.unit].objs) setMatrix(o, mul(M, objMatrix(o)));
+  }
+  const saved = nest.before - (nest.after ?? nest.before);
+  doc.select(nest.units.flatMap((u) => u.objs.map((o) => o.id)));
+  doc.commit('Nest');
+  $('dlg-nest').close();
+  toast(saved > 0.005 ? `Nested. Saves about ${fmtU(saved)} of vinyl.` : 'Nested. It was already tight, so this saves almost nothing.');
+  nest = null;
+}
+
 // ---------- right-click / long-press menu ----------
 const ctx = $('ctx');
 function closeMenu() { ctx.hidden = true; ctx.textContent = ''; }
@@ -967,6 +1257,7 @@ function openMenu({ sp, client }) {
     { label: 'Offset (border)', on: addOffset },
     ...(one?.kind === 'offset' && one.offset?.linked ? [{ label: 'Unlink border', on: () => { unlinkOffset(one); doc.commit('Unlink'); } }] : []),
     { label: 'Step and repeat…', on: openRepeat },
+    { label: 'Nest…', on: openNest, off: sel.length < 2 },
     '-',
     { label: 'Duplicate', kb: 'Ctrl+D', on: () => duplicate() },
     { label: 'Copy', kb: 'Ctrl+C', on: () => { clipboard = doc.selected().map((o) => structuredClone(o)); toast('Copied.', { ms: 1000 }); } },
@@ -986,6 +1277,7 @@ function openMenu({ sp, client }) {
     { label: 'Add text', kb: 'T', on: addText },
     { label: 'Import…', kb: 'Ctrl+I', on: () => $('file-import').click() },
     { label: 'Select all', kb: 'Ctrl+A', on: () => doc.select(doc.objects.map((o) => o.id)), off: !doc.objects.length },
+    { label: 'Nest everything…', on: openNest, off: doc.objects.length < 2 },
     '-',
     { label: 'Fit design', kb: 'Shift+1', on: () => view.fitDesign() },
     { label: 'Show the roll', kb: 'Shift+0', on: () => view.fitRoll() },
@@ -1370,7 +1662,7 @@ function renderPresetRows() {
     };
     inp('name', 'text'); inp('speed', 'number', { min: 1, max: 100 }); inp('force', 'number', { min: 10, max: 350 });
     inp('passes', 'number', { min: 1, max: 5 }); inp('bladeOffset', 'number', { step: 0.05, min: 0 }); inp('overcut', 'number', { step: 0.1, min: 0 });
-    inp('mirror', 'checkbox'); inp('knob', 'text');
+    inp('mirror', 'checkbox'); inp('noRotate', 'checkbox'); inp('knob', 'text');
     const del = document.createElement('button'); del.className = 'tb danger'; del.textContent = 'Delete';
     del.onclick = () => { if (presets.length < 2) return; presets = presets.filter((x) => x !== p); savePresets(presets); renderPresetRows(); };
     cell(del);
@@ -1408,7 +1700,7 @@ $('s-calc').onclick = () => {
 };
 $('s-done').onclick = () => $('dlg-settings').close();
 $('btn-settings').onclick = openSettings;
-$('btn-about').onclick = () => { $('ver').textContent = VERSION; $('dlg-about').showModal(); };
+$('btn-about').onclick = () => { $('ver').textContent = `${VERSION} (build ${BUILD})`; $('dlg-about').showModal(); };
 
 // ---------- toolbar + panels ----------
 $('btn-new').onclick = newDesign;
@@ -1440,6 +1732,12 @@ $('b-weld').onclick = weldSelection;
 $('b-unweld').onclick = unweldSelection;
 $('b-offset').onclick = addOffset;
 $('b-combine').onclick = combineSelection;
+$('b-nest').onclick = openNest;
+$('ns-start').onclick = startBestFit;
+$('ns-apply').onclick = applyNest;
+$('ns-cancel').onclick = () => $('dlg-nest').close();
+$('dlg-nest').addEventListener('close', () => { stopNestWorker(); nest = null; });
+for (const id of ['ns-method', 'ns-rot', 'ns-holes', 'ns-space']) $(id).addEventListener('change', () => { if (nest) runNest(); });
 $('b-nodes').onclick = () => enterNodes(single());
 document.querySelectorAll('[data-node]').forEach((b) => { b.onclick = () => nodeOp(b.dataset.node); });
 $('n-done').onclick = exitNodes;
@@ -1496,11 +1794,18 @@ $('file-font').onchange = run(async (e) => {
 });
 if (!localFontsSupported()) $('t-local').disabled = true;
 
-$('tr-th').addEventListener('input', () => updateTrace({ threshold: +$('tr-th').value }));
-$('tr-sm').addEventListener('input', () => updateTrace({ smooth: +$('tr-sm').value }));
-$('tr-sp').addEventListener('input', () => updateTrace({ despeckle: +$('tr-sp').value }));
-$('tr-inv').addEventListener('change', () => updateTrace({ invert: $('tr-inv').checked }));
-$('tr-show').addEventListener('change', () => { const o = single('trace'); if (o) { o.trace.showImage = $('tr-show').checked; doc.commit('Show photo'); } });
+// Sliders: preview while dragging, keep on release. Other controls keep right away.
+for (const [id, key] of [['tr-th', 'threshold'], ['tr-sm', 'smooth'], ['tr-sp', 'despeckle'], ['tr-colors', 'colors']]) {
+  $(id).addEventListener('input', () => updateTrace({ [key]: +$(id).value }));
+  $(id).addEventListener('change', () => updateTrace({ [key]: +$(id).value }, true));
+}
+$('tr-mode').addEventListener('change', () => updateTrace({ mode: $('tr-mode').value }, true));
+$('tr-inv').addEventListener('change', () => updateTrace({ invert: $('tr-inv').checked }, true));
+$('tr-bg').addEventListener('change', () => updateTrace({ dropBg: $('tr-bg').checked }, true));
+$('tr-stack').addEventListener('change', () => updateTrace({ stack: $('tr-stack').value }, true));
+$('tr-overlap').addEventListener('change', () => { const v = parseFloat($('tr-overlap').value) / k(); if (v >= 0) updateTrace({ overlap: round(v, 4) }, true); });
+$('tr-stroke').addEventListener('change', () => { const v = parseFloat($('tr-stroke').value) / k(); updateTrace({ stroke: v > 0 ? round(v, 4) : 0 }, true); });
+$('tr-show').addEventListener('change', () => { const o = traceTarget(); if (o) { for (const x of traceGroup(o)) x.trace.showImage = $('tr-show').checked; doc.commit('Show photo'); } });
 
 // log drawer
 $('st-log').onclick = () => { $('logdrawer').hidden = !$('logdrawer').hidden; };
@@ -1584,7 +1889,8 @@ window.addEventListener('beforeunload', () => { doc.saveNow(); });
 
 // ---------- start up ----------
 (async () => {
-  log(`FantastiCut ${VERSION} ready. Web Serial ${serialSupported() ? 'available' : 'NOT available (use Chrome or Edge)'}.`);
+  $('st-ver').title = `FantastiCut ${VERSION}, build ${BUILD}`;
+  log(`FantastiCut ${VERSION} (build ${BUILD}) ready. Web Serial ${serialSupported() ? 'available' : 'NOT available (use Chrome or Edge)'}.`);
   refreshConn();
   await refreshFontSelect().catch(() => {});
   view.fitRoll();
@@ -1600,7 +1906,7 @@ window.addEventListener('beforeunload', () => { doc.saveNow(); });
 })();
 
 // For testing in the browser console.
-window.fc = { doc, view, settings: () => settings, prepareJob, planJob, BUNDLED, plan: () => currentPlan, enterNodes, exitNodes, nodeOp };
+window.fc = { doc, view, settings: () => settings, prepareJob, planJob, BUNDLED, plan: () => currentPlan, nest: () => nest, nestUnits: (objs) => nestUnits(objs).units.length, enterNodes, exitNodes, nodeOp, tracer, traceDraft: () => traceDraft };
 
 // Opening a .fcut file from Windows when FantastiCut is installed as an app.
 if ('launchQueue' in window) {

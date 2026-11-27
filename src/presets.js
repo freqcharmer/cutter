@@ -2,14 +2,15 @@
 import { lsGet, lsSet } from './store.js';
 
 // Starting points for an MH-series cutter with a 45° blade. Always confirm with a test cut.
+// noRotate: the material has a direction (brushed, carbon fiber, some reflective), so nesting never turns pieces.
 export const DEFAULT_PRESETS = [
-  { id: 'p651', name: 'Oracal 651 (permanent)', speed: 30, force: 90, passes: 1, bladeOffset: 0.25, overcut: 0.5, mirror: false, knob: 'Blade tip just past the holder: about the thickness of a credit card' },
-  { id: 'p631', name: 'Oracal 631 (removable / wall)', speed: 30, force: 80, passes: 1, bladeOffset: 0.25, overcut: 0.5, mirror: false, knob: 'Same as 651' },
-  { id: 'p751', name: 'Oracal 751 / 951 (cast)', speed: 25, force: 80, passes: 1, bladeOffset: 0.25, overcut: 0.5, mirror: false, knob: 'Same as 651' },
-  { id: 'phtv', name: 'HTV, Siser EasyWeed', speed: 25, force: 70, passes: 1, bladeOffset: 0.25, overcut: 0.5, mirror: true, knob: 'Same as 651; load shiny carrier side down' },
-  { id: 'pglt', name: 'Glitter HTV (60° blade)', speed: 15, force: 150, passes: 2, bladeOffset: 0.5, overcut: 0.5, mirror: true, knob: 'Use a 60° blade, extended slightly more' },
-  { id: 'pref', name: 'Reflective (60° blade)', speed: 15, force: 180, passes: 1, bladeOffset: 0.5, overcut: 0.5, mirror: false, knob: 'Use a 60° blade' },
-  { id: 'pstn', name: 'Stencil, Oramask 813', speed: 30, force: 70, passes: 1, bladeOffset: 0.25, overcut: 0.5, mirror: false, knob: 'Same as 651' },
+  { id: 'p651', name: 'Oracal 651 (permanent)', speed: 30, force: 90, passes: 1, bladeOffset: 0.25, overcut: 0.5, mirror: false, noRotate: false, knob: 'Blade tip just past the holder: about the thickness of a credit card' },
+  { id: 'p631', name: 'Oracal 631 (removable / wall)', speed: 30, force: 80, passes: 1, bladeOffset: 0.25, overcut: 0.5, mirror: false, noRotate: false, knob: 'Same as 651' },
+  { id: 'p751', name: 'Oracal 751 / 951 (cast)', speed: 25, force: 80, passes: 1, bladeOffset: 0.25, overcut: 0.5, mirror: false, noRotate: false, knob: 'Same as 651' },
+  { id: 'phtv', name: 'HTV, Siser EasyWeed', speed: 25, force: 70, passes: 1, bladeOffset: 0.25, overcut: 0.5, mirror: true, noRotate: false, knob: 'Same as 651; load shiny carrier side down' },
+  { id: 'pglt', name: 'Glitter HTV (60° blade)', speed: 15, force: 150, passes: 2, bladeOffset: 0.5, overcut: 0.5, mirror: true, noRotate: false, knob: 'Use a 60° blade, extended slightly more' },
+  { id: 'pref', name: 'Reflective (60° blade)', speed: 15, force: 180, passes: 1, bladeOffset: 0.5, overcut: 0.5, mirror: false, noRotate: false, knob: 'Use a 60° blade' },
+  { id: 'pstn', name: 'Stencil, Oramask 813', speed: 30, force: 70, passes: 1, bladeOffset: 0.25, overcut: 0.5, mirror: false, noRotate: false, knob: 'Same as 651' },
 ];
 
 export const DEFAULT_SETTINGS = {
