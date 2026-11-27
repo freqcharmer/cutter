@@ -1,0 +1,17 @@
+{
+  "name": "FantastiCut",
+  "short_name": "FantastiCut",
+  "description": "Vinyl cutting for the USCutter MH 871 and other HPGL cutters.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#1B1B1E",
+  "theme_color": "#1B1B1E",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "file_handlers": [
+    { "action": "./", "accept": { "application/json": [".fcut"] } }
+  ]
+}

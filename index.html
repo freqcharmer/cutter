@@ -2,55 +2,264 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>FantastiCut</title>
+  <meta name="theme-color" content="#1B1B1E">
   <link rel="icon" href="assets/logo-mark.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&display=swap">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="app.css">
 </head>
 <body>
-  <header>
-    <h1 class="logo"><img src="assets/logo-mark.svg" alt="" width="56" height="56"><span><span class="a">Fantasti</span><span class="b">Cut</span></span></h1>
-    <p class="sub">Connection test: USCutter MH 871</p>
+  <header class="topbar">
+    <div class="brand"><img src="assets/logo-mark.svg" alt="" width="26" height="26"><span><span class="a">Fantasti</span><span class="b">Cut</span></span></div>
+
+    <div class="group" role="toolbar" aria-label="File">
+      <button class="tb" id="btn-new" title="New design (Ctrl+N)">New</button>
+      <button class="tb" id="btn-open" title="Open a .fcut design (Ctrl+O)">Open</button>
+      <button class="tb" id="btn-save" title="Save as a .fcut file (Ctrl+S)">Save</button>
+      <button class="tb primary-ghost" id="btn-import" title="Import SVG, DXF, PNG, or JPG (Ctrl+I)">Import</button>
+    </div>
+    <div class="group" role="toolbar" aria-label="Edit">
+      <button class="tb icon" id="btn-undo" title="Undo (Ctrl+Z)" aria-label="Undo">&#x21B6;</button>
+      <button class="tb icon" id="btn-redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">&#x21B7;</button>
+      <button class="tb" id="btn-text" title="Add text (T)">Text</button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <button class="tb conn" id="btn-conn" title="Connect the cutter"><span class="dot"></span><span id="conn-label">Connect cutter</span></button>
+    <button class="tb icon" id="btn-settings" title="Settings" aria-label="Settings">&#x2699;</button>
+    <button class="tb icon" id="btn-about" title="About FantastiCut" aria-label="About">?</button>
+    <button class="cutbtn" id="btn-cut" title="Cut (Ctrl+Enter)">Cut</button>
   </header>
 
-  <main>
-    <p id="support" class="note"></p>
+  <div class="work">
+    <div class="stage" id="stage">
+      <canvas id="canvas" aria-label="Design area"></canvas>
+      <div class="empty" id="empty">
+        <p class="big">Drop a design here</p>
+        <p>SVG, DXF, PNG, or JPG. Or <button class="link" id="empty-import">import a file</button> or <button class="link" id="empty-text">add text</button>.</p>
+      </div>
+      <div class="zoombar">
+        <button class="tb icon" id="zoom-out" aria-label="Zoom out">&minus;</button>
+        <span id="zoom-label">100%</span>
+        <button class="tb icon" id="zoom-in" aria-label="Zoom in">+</button>
+        <button class="tb" id="zoom-fit" title="Fit design (Shift+1)">Fit</button>
+        <button class="tb" id="zoom-roll" title="Show full roll width (Shift+0)">Roll</button>
+        <button class="tb" id="tool-pan" title="Hand tool: drag to pan (or hold Space)" aria-pressed="false">Pan</button>
+      </div>
+      <div class="drop" id="drop">Drop to import</div>
+    </div>
 
-    <section class="card">
-      <h2>1. Find the cutter</h2>
-      <p>Turn the cutter on, plug it in, then click below. If the cutter shows up in the list Chrome opens, FantastiCut can talk to it.</p>
-      <button id="choose">Find cutter</button>
-    </section>
+    <aside class="side" id="side">
+      <section class="panel" id="p-none">
+        <h2>Design</h2>
+        <p class="hint">Click a shape to select it. Drag the corners to resize, and the round handle to rotate. Shift keeps it straight or snaps to 15&deg;.</p>
+        <dl class="facts"><dt>Cutting width</dt><dd id="f-width"></dd><dt>Objects</dt><dd id="f-count">0</dd><dt>Design size</dt><dd id="f-size">&ndash;</dd></dl>
+      </section>
 
-    <section class="card">
-      <h2>2. Connect</h2>
-      <label>Baud rate
-        <select id="baud">
-          <option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option>
-        </select>
-      </label>
-      <button id="open" disabled>Connect</button>
-      <button id="close" disabled class="ghost">Disconnect</button>
-    </section>
+      <section class="panel" id="p-sel" hidden>
+        <h2 id="sel-title">Selection</h2>
+        <div class="grid2">
+          <label>X<input id="in-x" type="number" step="0.01"></label>
+          <label>Y<input id="in-y" type="number" step="0.01"></label>
+          <label>W<input id="in-w" type="number" step="0.01" min="0.01"></label>
+          <label>H<input id="in-h" type="number" step="0.01" min="0.01"></label>
+        </div>
+        <div class="row">
+          <label class="check"><input id="in-lock" type="checkbox" checked> Keep proportions</label>
+        </div>
+        <div class="grid2">
+          <label>Rotate&deg;<input id="in-rot" type="number" step="1"></label>
+          <div></div>
+        </div>
+        <div class="btns">
+          <button class="tb" id="b-fliph" title="Mirror left to right">Mirror &harr;</button>
+          <button class="tb" id="b-flipv" title="Flip top to bottom">Flip &varr;</button>
+          <button class="tb" id="b-dup" title="Duplicate (Ctrl+D)">Duplicate</button>
+          <button class="tb" id="b-ungroup" title="Split into separate pieces">Ungroup</button>
+          <button class="tb" id="b-front" title="Bring to front">To front</button>
+          <button class="tb danger" id="b-del" title="Delete (Del)">Delete</button>
+        </div>
+        <div class="btns" id="align-row">
+          <button class="tb" data-align="left" title="Align left edges">Align left</button>
+          <button class="tb" data-align="top" title="Align top edges">Align top</button>
+          <button class="tb" data-align="hcenter" title="Center horizontally">Center &harr;</button>
+          <button class="tb" data-align="vcenter" title="Center vertically">Center &varr;</button>
+        </div>
+      </section>
 
-    <section class="card">
-      <h2>3. Test cut</h2>
-      <p>Cuts a 1-inch square, half an inch from the blade's start point. Load scrap vinyl first.</p>
-      <label>Speed <input id="speed" type="number" value="20" min="1" max="80"></label>
-      <label>Force <input id="force" type="number" value="80" min="10" max="500"></label>
-      <button id="cut" disabled>Cut test square</button>
-    </section>
+      <section class="panel" id="p-text" hidden>
+        <h2>Text</h2>
+        <textarea id="t-text" rows="3" spellcheck="false"></textarea>
+        <label class="block">Font
+          <input id="t-font-filter" type="search" placeholder="Search fonts">
+          <select id="t-font" size="6"></select>
+        </label>
+        <div class="btns">
+          <button class="tb" id="t-local">Load installed fonts</button>
+          <button class="tb" id="t-upload">Upload font file</button>
+        </div>
+        <div class="grid2">
+          <label title="Height of a capital letter">Letter height<input id="t-height" type="number" step="0.05" min="0.05"></label>
+          <label title="Extra space between letters, as a fraction of the font size">Spacing<input id="t-spacing" type="number" step="0.01"></label>
+          <label>Line spacing<input id="t-line" type="number" step="0.05" min="0.5"></label>
+          <label>Align<select id="t-align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
+        </div>
+        <p class="hint" id="t-script-hint" hidden>Script fonts overlap from letter to letter. Weld (coming in Phase 2) joins them into one piece; until then, the letters cut through each other where they touch.</p>
+      </section>
 
-    <section class="card">
-      <h2>Log</h2>
-      <pre id="log"></pre>
-      <button id="copy" class="ghost">Copy log</button>
-    </section>
-  </main>
+      <section class="panel" id="p-trace" hidden>
+        <h2>Trace</h2>
+        <label class="block">Threshold <output id="tr-th-v"></output><input id="tr-th" type="range" min="1" max="254"></label>
+        <label class="block">Smoothing <output id="tr-sm-v"></output><input id="tr-sm" type="range" min="0.2" max="6" step="0.1"></label>
+        <label class="block">Remove specks <output id="tr-sp-v"></output><input id="tr-sp" type="range" min="0" max="200" step="1"></label>
+        <div class="row">
+          <label class="check"><input id="tr-inv" type="checkbox"> Invert</label>
+          <label class="check"><input id="tr-show" type="checkbox"> Show photo</label>
+        </div>
+        <p class="hint">Darker pixels than the threshold become cut lines. A sharp, high-resolution logo traces best.</p>
+      </section>
 
-  <footer>&copy;2026 FantastiCut <a href="https://emfdprodco.com/">EMFDPRODCO</a>. All rights Reserved. Hosted by <a href="https://ghostilla.com/">gHostilla</a>. <a href="mailto:contact@emfdprodco.com?subject=FantastiCut">Contact</a>.<br><a href="terms.html">Terms</a> &middot; <a href="privacy.html">Privacy</a></footer>
+      <section class="panel" id="p-layers">
+        <h2>Objects</h2>
+        <ul class="layers" id="layers"></ul>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="statusbar">
+    <span id="st-cursor">&ndash;</span>
+    <span id="st-sel"></span>
+    <span id="st-saved" class="dim"></span>
+    <button class="link" id="st-log">Log</button>
+    <span class="spacer"></span>
+    <span class="legal">&copy;2026 FantastiCut <a href="https://emfdprodco.com/" target="_blank" rel="noopener">EMFDPRODCO</a>. All rights Reserved. Hosted by <a href="https://ghostilla.com/" target="_blank" rel="noopener">gHostilla</a>. <a href="mailto:contact@emfdprodco.com?subject=FantastiCut">Contact</a>.</span>
+  </footer>
+
+  <section class="logdrawer" id="logdrawer" hidden>
+    <div class="logbar"><strong>Log</strong><span class="spacer"></span><button class="tb" id="log-copy">Copy log</button><button class="tb" id="log-clear">Clear</button><button class="tb icon" id="log-close" aria-label="Close log">&times;</button></div>
+    <pre id="log"></pre>
+  </section>
+
+  <!-- Cut dialog -->
+  <dialog id="dlg-cut" class="dlg wide">
+    <form method="dialog" class="dlg-head"><h2>Cut</h2><button class="tb icon" value="close" aria-label="Close">&times;</button></form>
+    <div class="cut-body">
+      <div class="cut-left">
+        <label class="block">Material
+          <select id="c-preset"></select>
+        </label>
+        <p class="hint" id="c-knob"></p>
+        <div class="grid2">
+          <label>Speed (cm/s)<input id="c-speed" type="number" min="1" max="100"></label>
+          <label>Force (g)<input id="c-force" type="number" min="10" max="350"></label>
+          <label>Passes<input id="c-passes" type="number" min="1" max="5"></label>
+          <label title="How far the blade tip trails behind its center. 0.25 mm for a standard 45° blade.">Blade offset (mm)<input id="c-offset" type="number" min="0" max="1.5" step="0.05"></label>
+          <label title="How far each closed shape is cut past its start so it fully releases.">Overcut (mm)<input id="c-overcut" type="number" min="0" max="3" step="0.1"></label>
+        </div>
+        <div class="row col">
+          <label class="check big"><input id="c-mirror" type="checkbox"> Mirror (heat-transfer vinyl, or graphics applied inside glass)</label>
+          <label class="check"><input id="c-selonly" type="checkbox"> Cut selected objects only</label>
+          <label class="check"><input id="c-atblade" type="checkbox"> Start at the blade position (saves vinyl)</label>
+        </div>
+        <div class="btns">
+          <button class="tb" id="c-edit-presets">Edit materials</button>
+          <button class="tb" id="c-save-preset" title="Save these numbers into the selected material">Save to material</button>
+        </div>
+      </div>
+      <div class="cut-right">
+        <canvas id="c-preview" width="480" height="300" aria-label="Cut preview"></canvas>
+        <dl class="facts" id="c-stats"></dl>
+        <ul class="warn" id="c-warn"></ul>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <button class="tb" id="c-test" title="Cuts a 1-inch test square with a triangle inside, using these settings">Test cut</button>
+      <button class="tb" id="c-plt" title="Download the job as an HPGL .plt file">Save .plt</button>
+      <span class="spacer"></span>
+      <button class="cutbtn" id="c-send">Send to cutter</button>
+    </div>
+  </dialog>
+
+  <!-- Materials -->
+  <dialog id="dlg-presets" class="dlg">
+    <form method="dialog" class="dlg-head"><h2>Materials</h2><button class="tb icon" value="close" aria-label="Close">&times;</button></form>
+    <p class="hint">Starting points for a 45&deg; blade. Run a test cut on each new roll: the triangle should weed cleanly, and the backing should show light scoring but not be cut through.</p>
+    <table class="ptable"><thead><tr><th>Name</th><th>Speed</th><th>Force</th><th>Passes</th><th>Offset mm</th><th>Overcut mm</th><th>Mirror</th><th>Blade depth note</th><th></th></tr></thead><tbody id="p-rows"></tbody></table>
+    <div class="dlg-foot"><button class="tb" id="p-add">Add material</button><button class="tb" id="p-reset">Restore defaults</button><span class="spacer"></span><button class="cutbtn" id="p-done">Done</button></div>
+  </dialog>
+
+  <!-- Settings -->
+  <dialog id="dlg-settings" class="dlg">
+    <form method="dialog" class="dlg-head"><h2>Settings</h2><button class="tb icon" value="close" aria-label="Close">&times;</button></form>
+    <div class="settings">
+      <h3>Cutter</h3>
+      <div class="grid3">
+        <label>Cutting width (in)<input id="s-width" type="number" step="0.25" min="2" max="60"></label>
+        <label>Display units<select id="s-units"><option value="in">Inches</option><option value="mm">Millimeters</option></select></label>
+        <label>After the cut<select id="s-after"><option value="advance">Feed past the job</option><option value="origin">Return to start</option></select></label>
+        <label>Margin at start (in)<input id="s-margin" type="number" step="0.05" min="0"></label>
+      </div>
+      <h3>Connection</h3>
+      <div class="grid3">
+        <label>Baud rate<select id="s-baud"><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option></select></label>
+        <label>Flow control<select id="s-flow"><option value="none">None</option><option value="hardware">Hardware (RTS/CTS)</option></select></label>
+        <label>Chunk (bytes)<input id="s-chunk" type="number" min="8" max="1024"></label>
+        <label>Delay per chunk (ms)<input id="s-delay" type="number" min="0" max="500"></label>
+      </div>
+      <label class="check"><input id="s-speedforce" type="checkbox"> Send speed and force to the cutter (turn off to use the cutter's own panel settings)</label>
+      <h3>Calibration</h3>
+      <div class="grid3">
+        <label>Steps per inch<input id="s-steps" type="number" min="100" max="5000" step="0.1"></label>
+        <label>Test square measured (in)<input id="s-measured" type="number" step="0.001" placeholder="1.000"></label>
+        <div class="end"><button class="tb" id="s-calc">Correct steps</button></div>
+      </div>
+      <p class="hint">Cut the test square, measure it, enter the size, and click Correct steps.</p>
+      <h3>Direction</h3>
+      <p class="hint">Compare a test cut with the preview. If it comes out turned or mirrored, change these until they match.</p>
+      <div class="row">
+        <label class="check"><input id="s-swap" type="checkbox"> Swap X and Y</label>
+        <label class="check"><input id="s-flipx" type="checkbox"> Reverse X</label>
+        <label class="check"><input id="s-flipy" type="checkbox"> Reverse Y</label>
+      </div>
+    </div>
+    <div class="dlg-foot"><span class="spacer"></span><button class="cutbtn" id="s-done">Done</button></div>
+  </dialog>
+
+  <!-- About -->
+  <dialog id="dlg-about" class="dlg">
+    <form method="dialog" class="dlg-head"><h2>About FantastiCut</h2><button class="tb icon" value="close" aria-label="Close">&times;</button></form>
+    <p>A clean, license-key-free cutting app for the USCutter MH 871 and other HPGL vinyl cutters. Version <span id="ver"></span>.</p>
+    <h3>Shortcuts</h3>
+    <table class="keys">
+      <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>Undo / Redo</td></tr>
+      <tr><td>Ctrl+D</td><td>Duplicate</td></tr>
+      <tr><td>Ctrl+C / Ctrl+V</td><td>Copy / Paste (also pastes images)</td></tr>
+      <tr><td>Ctrl+A</td><td>Select all</td></tr>
+      <tr><td>Arrows (Shift)</td><td>Nudge 0.05" (0.5")</td></tr>
+      <tr><td>Delete</td><td>Delete</td></tr>
+      <tr><td>Space + drag, or middle mouse</td><td>Pan</td></tr>
+      <tr><td>Wheel / pinch</td><td>Zoom</td></tr>
+      <tr><td>T</td><td>Add text</td></tr>
+      <tr><td>Ctrl+Enter</td><td>Cut</td></tr>
+    </table>
+    <h3>From EMFDPRODCO</h3>
+    <p><a href="https://emfdprodco.com/" target="_blank" rel="noopener">EMFDPRODCO.com</a> &middot; Hosted by <a href="https://ghostilla.com/" target="_blank" rel="noopener">gHostilla</a></p>
+    <h3>Open source inside</h3>
+    <p class="hint">opentype.js (MIT), ImageTracer.js (Unlicense), dxf-parser (MIT), svgpath (MIT). Fonts: Bebas Neue, Oswald, Space Grotesk, Pacifico (SIL Open Font License).</p>
+    <p class="hint"><a href="terms.html">Terms</a> &middot; <a href="privacy.html">Privacy</a></p>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <input type="file" id="file-import" accept=".svg,.dxf,.png,.jpg,.jpeg,.webp,.bmp,.gif,.fcut,image/*" multiple hidden>
+  <input type="file" id="file-open" accept=".fcut,application/json" hidden>
+  <input type="file" id="file-font" accept=".ttf,.otf,.woff" hidden>
+
   <script type="module" src="src/app.js"></script>
 </body>
 </html>
