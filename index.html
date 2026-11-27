@@ -5,10 +5,34 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>FantastiCut</title>
   <meta name="theme-color" content="#1B1B1E">
-  <meta name="fantasticut-version" content="v0.1 build 2026-11-27 Phase 3 phone">
+  <meta name="fantasticut-version" content="v0.1 build 2026-11-27 Phase 3 fix">
   <link rel="icon" href="assets/fantasticut-icon-16.svg" type="image/svg+xml">
   <link rel="icon" href="assets/fantasticut-icon-32.png" sizes="32x32" type="image/png">
   <link rel="icon" href="assets/fantasticut-icon-16.png" sizes="16x16" type="image/png">
+  <!-- Startup check: if the app's code can't load, say why instead of showing a half-working page. -->
+  <script>
+    (function () {
+      var errs = [];
+      addEventListener('error', function (e) {
+        var t = e.target;
+        if (t && t !== window && (t.src || t.href)) errs.push('Could not load ' + (t.src || t.href));
+        else if (e.message) errs.push(e.message + (e.filename ? ' (' + e.filename.split('/').slice(-2).join('/') + ':' + e.lineno + ')' : ''));
+      }, true);
+      addEventListener('unhandledrejection', function (e) { errs.push(String(e.reason && e.reason.message || e.reason)); });
+      addEventListener('load', function () {
+        setTimeout(function () {
+          if (window.fc) return;
+          var b = document.createElement('div');
+          b.className = 'boot-fail'; b.setAttribute('role', 'alert');
+          b.innerHTML = '<strong>FantastiCut couldn\'t start.</strong> <span></span> <button class="tb" type="button">Reload</button>';
+          b.querySelector('span').textContent = errs.length ? errs.slice(0, 3).join(' | ') : 'The app code did not run (no error was reported). Try reloading.';
+          b.querySelector('button').onclick = function () { location.reload(); };
+          document.body.appendChild(b);
+          window.fcBootErrors = errs;
+        }, 6000);
+      });
+    })();
+  </script>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="assets/fantasticut-icon-192.png">
   <link rel="preload" href="fonts/outfit-400.woff2" as="font" type="font/woff2" crossorigin>
@@ -60,8 +84,8 @@
       <div class="drop" id="drop">Drop to import</div>
     </div>
 
-    <aside class="side" id="side">
-      <button class="sheet-handle" id="sheet-handle" aria-expanded="true" aria-controls="side" title="Show or hide the tools"><span class="grip" aria-hidden="true"></span><span id="sheet-label">Tools</span><span class="chev" aria-hidden="true"></span></button>
+    <aside class="side collapsed" id="side">
+      <button class="sheet-handle" id="sheet-handle" aria-expanded="false" aria-controls="side" title="Show or hide the tools"><span class="grip" aria-hidden="true"></span><span id="sheet-label">Tools</span><span class="chev" aria-hidden="true"></span></button>
       <section class="panel" id="p-none">
         <h2>Design</h2>
         <p class="hint">Click a shape to select it. Drag the corners to resize, and the round handle to rotate. Shift keeps it straight or snaps to 15&deg;.</p>
@@ -203,7 +227,7 @@
     <span id="st-sel"></span>
     <span id="st-saved" class="dim"></span>
     <button class="link" id="st-log">Log</button>
-    <span id="st-ver" class="dim"><span class="long">FantastiCut </span>v0.1<span class="long"> · build 2026-11-27 Phase 3 phone</span></span>
+    <span id="st-ver" class="dim"><span class="long">FantastiCut </span>v0.1<span class="long"> · build 2026-11-27 Phase 3 fix</span></span>
     <span class="spacer"></span>
     <span class="legal">&copy;2026 FantastiCut <a href="https://emfdprodco.com/" target="_blank" rel="noopener">EMFDPRODCO</a>. All rights Reserved. Hosted by <a href="https://ghostilla.com/" target="_blank" rel="noopener">gHostilla</a>. <a href="mailto:contact@emfdprodco.com?subject=FantastiCut">Contact</a>.</span>
   </footer>
@@ -329,7 +353,7 @@
   <!-- About -->
   <dialog id="dlg-about" class="dlg">
     <form method="dialog" class="dlg-head"><h2>About FantastiCut</h2><button class="tb icon" value="close" aria-label="Close">&times;</button></form>
-    <p>A clean, license-key-free cutting app for the USCutter MH 871 and other HPGL vinyl cutters. Version <span id="ver">v0.1 (build 2026-11-27 Phase 3 phone)</span>.</p>
+    <p>A clean, license-key-free cutting app for the USCutter MH 871 and other HPGL vinyl cutters. Version <span id="ver">v0.1 (build 2026-11-27 Phase 3 fix)</span>.</p>
     <h3>Shortcuts</h3>
     <table class="keys">
       <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>Undo / Redo</td></tr>

@@ -17,7 +17,7 @@ import { Cutter, supported as serialSupported } from './serial.js';
 
 // Version: v0.1 until E's first real test cut, then 1.0. BUILD changes with every deploy (also in index.html).
 export const VERSION = 'v0.1';
-export const BUILD = '2026-11-27 Phase 3 phone';
+export const BUILD = '2026-11-27 Phase 3 fix';
 const $ = (id) => document.getElementById(id);
 
 // ---------- state ----------
@@ -1931,6 +1931,8 @@ $('install-go').onclick = async () => { if (!installEvt) return; installEvt.prom
 $('install-x').onclick = () => { lsSet('fc.installHint', true); $('install-hint').hidden = true; };
 addEventListener('appinstalled', () => { lsSet('fc.installHint', true); $('install-hint').hidden = true; });
 setTimeout(maybeInstallHint, 4000);
+// After an update, say which build is running (handy when comparing screenshots).
+{ const last = lsGet('fc.build', null); if (last && last !== BUILD) setTimeout(() => toast(`Updated to FantastiCut ${VERSION}, build ${BUILD}.`), 1200); lsSet('fc.build', BUILD); }
 
 window.fc = { doc, view, settings: () => settings, prepareJob, planJob, BUNDLED, plan: () => currentPlan, nest: () => nest, nestUnits: (objs) => nestUnits(objs).units.length, enterNodes, exitNodes, nodeOp, tracer, traceDraft: () => traceDraft };
 

@@ -4,7 +4,8 @@
 //   node tests/run.mjs [http://localhost:8123/] [path/to/playwright]
 //
 // Screenshots go to tests/out/. Exits with code 1 if any check fails.
-import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,6 +76,47 @@ await page.evaluate(async () => { localStorage.clear(); indexedDB.deleteDatabase
 await page.reload();
 await page.waitForFunction(() => window.fc);
 const fc = (fn, arg) => page.evaluate(fn, arg);
+
+// ---------- the live server's file types (a stand-in for cPanel's Apache) ----------
+// Apache doesn't know .mjs on its own; without the .htaccess AddType rule it sends it as a download and
+// browsers refuse to run the app. This server copies that behavior and reads .htaccess the way Apache does.
+{
+  const root = join(here, '..');
+  const base = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json' };
+  const types = (useHt) => {
+    const m = { ...base };
+    if (useHt && existsSync(join(root, '.htaccess'))) for (const line of readFileSync(join(root, '.htaccess'), 'utf8').split('\n')) {
+      const r = line.trim().match(/^AddType\s+(\S+)\s+(.+)$/i);
+      if (r) for (const ext of r[2].split(/\s+/)) m[ext.toLowerCase()] = r[1];
+    }
+    return m;
+  };
+  const serve = (useHt) => createServer((req, res) => {
+    let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    if (p.endsWith('/')) p += 'index.html';
+    const f = join(root, p);
+    if (!f.startsWith(root) || !existsSync(f) || statSync(f).isDirectory()) { res.writeHead(404); res.end(); return; }
+    const ext = (p.match(/\.[^./]+$/) || [''])[0].toLowerCase();
+    res.writeHead(200, { 'Content-Type': types(useHt)[ext] || 'application/octet-stream' });
+    res.end(readFileSync(f));
+  });
+  const ht = readFileSync(join(root, '.htaccess'), 'utf8');
+  check('.htaccess serves .mjs as JavaScript and asks browsers to check for updates', /AddType\s+text\/javascript\s+[^\n]*\.mjs/.test(ht) && /Cache-Control "no-cache"/.test(ht));
+  for (const [useHt, port] of [[true, 8124], [false, 8125]]) {
+    const srv = serve(useHt); await new Promise((r) => srv.listen(port, r));
+    const p2 = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+    await p2.goto(`http://localhost:${port}/`);
+    if (useHt) {
+      const ok = await p2.waitForFunction(() => window.fc && document.getElementById('f-width').textContent, null, { timeout: 15000 }).then(() => true, () => false);
+      check('on an Apache-style server with the .htaccess, the app starts', ok);
+    } else {
+      const shown = await p2.waitForSelector('.boot-fail', { timeout: 15000 }).then(() => true, () => false);
+      const msg = shown ? await p2.textContent('.boot-fail') : '';
+      check('without the .mjs rule the app can\'t start, and a banner says why instead of a half-working page', shown && /couldn.t start/.test(msg), msg.slice(0, 160));
+    }
+    await p2.close(); srv.close();
+  }
+}
 
 // ---------- offline list and version ----------
 {

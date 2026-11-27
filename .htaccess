@@ -1,0 +1,13 @@
+# FantastiCut (emfdprodco.com/cutter): server rules for this folder only.
+# 1) The app is built from JavaScript modules; .mjs files must be served as JavaScript or browsers refuse to run them.
+AddType text/javascript .mjs .js
+AddType application/manifest+json .webmanifest
+AddType font/woff2 .woff2
+AddType font/woff .woff
+AddType image/svg+xml .svg
+# 2) Browsers check for a newer version of the app's files on every visit (a quick "not modified" when nothing changed).
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html|js|mjs|css|webmanifest)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>
