@@ -25,6 +25,9 @@ export class View {
     this.drag = null; this.hover = null; this.pointers = new Map();
     this.images = new Map(); // trace object id → HTMLImageElement
     this.onCursor = () => {}; this.onCommit = () => {}; this.onSelect = () => {};
+    this.onContext = () => {};    // ({ sp, wp, client: [x, y] }) on right-click or long-press
+    this.followers = () => [];    // objects that move along with the selection (linked offsets)
+    this.longPress = 0;
     this.spaceDown = false; this.tool = 'select';
     this.resize();
     new ResizeObserver(() => { this.resize(); }).observe(canvas.parentElement);
@@ -262,17 +265,30 @@ export class View {
     this.c.setPointerCapture(e.pointerId);
     const sp = this.eventPoint(e);
     this.pointers.set(e.pointerId, sp);
+    clearTimeout(this.longPress);
     if (this.pointers.size === 2) { // pinch / two-finger pan
       const [a, b] = [...this.pointers.values()];
       this.drag = { type: 'pinch', d0: Math.hypot(a[0] - b[0], a[1] - b[1]), z0: this.zoom, mid0: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], ox: this.ox, oy: this.oy };
       return;
     }
     if (e.button === 1 || e.button === 2 || this.spaceDown || this.tool === 'pan') {
-      this.drag = { type: 'pan', s0: sp, ox: this.ox, oy: this.oy };
+      // A right-click that doesn't drag opens the menu; dragging with it still pans.
+      this.drag = { type: 'pan', s0: sp, ox: this.ox, oy: this.oy, menu: e.button === 2, client: [e.clientX, e.clientY] };
       this.c.style.cursor = 'grabbing';
       return;
     }
     const touch = e.pointerType === 'touch';
+    if (touch || e.pointerType === 'pen') {
+      // Long-press (touch or pen) opens the menu.
+      const client = [e.clientX, e.clientY];
+      this.longPress = setTimeout(() => {
+        if (this.pointers.size !== 1 || (this.drag && this.drag.moved)) return;
+        if (this.drag?.objs && this.drag.type !== 'marquee') this.restoreDrag(this.drag);
+        this.drag = null; this.ignoreUp = true;
+        this.onContext({ sp, wp: this.toWorld(...sp), client });
+        this.redraw();
+      }, 550);
+    }
     const h = this.hitHandle(sp, touch);
     const start = { sp, wp: this.toWorld(...sp), objs: this.doc.selected().map((o) => structuredClone(o)) };
     if (h) {
@@ -284,7 +300,8 @@ export class View {
     if (o) {
       if (e.shiftKey || e.ctrlKey || e.metaKey) { this.doc.toggle(o.id); this.onSelect(); this.redraw(); return; }
       if (!this.doc.selection.has(o.id)) { this.doc.select([o.id]); this.onSelect(); }
-      this.drag = { type: 'move', sp, wp: start.wp, objs: this.doc.selected().map((x) => structuredClone(x)), moved: false };
+      const movers = [...this.doc.selected(), ...this.followers(this.doc.selected())];
+      this.drag = { type: 'move', sp, wp: start.wp, objs: movers.map((x) => structuredClone(x)), moved: false };
     } else {
       if (!e.shiftKey) { this.doc.clearSelection(); this.onSelect(); }
       this.drag = { type: 'marquee', a: sp, b: sp, additive: e.shiftKey };
@@ -316,18 +333,24 @@ export class View {
       this.zoom = z; this.ox = mid[0] - wx * z; this.oy = mid[1] - wy * z;
       this.redraw(); return;
     }
-    if (d.type === 'pan') { this.ox = d.ox + sp[0] - d.s0[0]; this.oy = d.oy + sp[1] - d.s0[1]; this.redraw(); return; }
+    if (d.type === 'pan') {
+      if (d.menu && !d.panned && Math.hypot(sp[0] - d.s0[0], sp[1] - d.s0[1]) < 4) return;
+      d.panned = true;
+      this.ox = d.ox + sp[0] - d.s0[0]; this.oy = d.oy + sp[1] - d.s0[1]; this.redraw(); return;
+    }
+    if (d.type === 'marquee' && Math.hypot(sp[0] - d.a[0], sp[1] - d.a[1]) > 8) clearTimeout(this.longPress);
     if (d.type === 'marquee') { d.b = sp; this.redraw(); return; }
 
-    if (!d.moved && Math.hypot(sp[0] - d.sp[0], sp[1] - d.sp[1]) < 3) return;
+    if (!d.moved && Math.hypot(sp[0] - d.sp[0], sp[1] - d.sp[1]) < (e.pointerType === 'mouse' ? 3 : 8)) return;
     d.moved = true;
+    clearTimeout(this.longPress);
     const byId = new Map(d.objs.map((o) => [o.id, o]));
     const live = this.doc.selected();
 
     if (d.type === 'move') {
       let dx = wp[0] - d.wp[0], dy = wp[1] - d.wp[1];
       if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
-      for (const o of live) { const s0 = byId.get(o.id); o.x = s0.x + dx; o.y = s0.y + dy; }
+      for (const s0 of d.objs) { const o = this.doc.get(s0.id); if (o) { o.x = s0.x + dx; o.y = s0.y + dy; } }
     } else if (d.type === 'rotate') {
       const c = d.hs.single ? [d.objs[0].x, d.objs[0].y] : [d.hs.group.x + d.hs.group.w / 2, d.hs.group.y + d.hs.group.h / 2];
       let da = (Math.atan2(wp[1] - c[1], wp[0] - c[0]) - Math.atan2(d.wp[1] - c[1], d.wp[0] - c[0])) * 180 / Math.PI;
@@ -388,13 +411,24 @@ export class View {
     }
   }
 
+  /** Puts dragged objects back where they started (used when a long-press opens the menu). */
+  restoreDrag(d) {
+    for (const s0 of d.objs || []) { const o = this.doc.get(s0.id); if (o) Object.assign(o, structuredClone(s0)); }
+  }
+
   up(e) {
     this.pointers.delete(e.pointerId);
+    clearTimeout(this.longPress);
+    if (this.ignoreUp) { if (!this.pointers.size) this.ignoreUp = false; this.drag = null; return; }
     const d = this.drag;
     if (!d) return;
     if (d.type === 'pinch') { if (this.pointers.size === 0) this.drag = null; return; }
     this.drag = null;
-    if (d.type === 'pan') { this.c.style.cursor = this.spaceDown || this.tool === 'pan' ? 'grab' : 'default'; return; }
+    if (d.type === 'pan') {
+      this.c.style.cursor = this.spaceDown || this.tool === 'pan' ? 'grab' : 'default';
+      if (d.menu && !d.panned && e.type === 'pointerup') this.onContext({ sp: d.s0, wp: this.toWorld(...d.s0), client: d.client });
+      return;
+    }
     if (d.type === 'marquee') {
       const [ax, ay] = this.toWorld(...d.a), [bx, by] = this.toWorld(...d.b);
       const x0 = Math.min(ax, bx), x1 = Math.max(ax, bx), y0 = Math.min(ay, by), y1 = Math.max(ay, by);

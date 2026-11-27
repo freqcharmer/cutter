@@ -2,6 +2,7 @@
 import { parse as parseFont } from '../vendor/opentype.mjs';
 import { flattenCubic, flattenQuad, clean } from './geom.js';
 import { idbGet, idbSet, idbKeys } from './store.js';
+import { weld } from './clip.js';
 
 export const BUNDLED = [
   { key: 'bundled:bebas-neue', name: 'Bebas Neue', url: 'fonts/bebas-neue.woff' },
@@ -66,9 +67,13 @@ export async function getFont(key) {
   return font;
 }
 
-export const TEXT_DEFAULTS = { text: 'FantastiCut', font: DEFAULT_FONT, height: 1, spacing: 0, lineHeight: 1.2, align: 'left' };
+export const TEXT_DEFAULTS = { text: 'FantastiCut', font: DEFAULT_FONT, height: 1, spacing: 0, lineHeight: 1.2, align: 'left', weld: true };
 
-/** Builds paths for text. `height` is the capital-letter height in inches. Each glyph gets its own `el`. */
+/**
+ * Builds paths for text. `height` is the capital-letter height in inches.
+ * With `weld` on (the default; older designs without the setting count as on), touching and
+ * overlapping letters are joined into one outline. With it off, each glyph gets its own `el`.
+ */
 export function textToPaths(font, t) {
   const capRatio = (font.tables.os2?.sCapHeight || font.unitsPerEm * 0.7) / font.unitsPerEm;
   const size = t.height / capRatio;
@@ -88,6 +93,10 @@ export function textToPaths(font, t) {
       if (out.length > before) el++;
     }
   });
+  if (t.weld !== false && out.length) {
+    // Font outlines use the nonzero rule: counters wind the opposite way, overlaps the same way.
+    return weld([out], 'nonzero').map((p) => ({ ...p, color: '#000000' }));
+  }
   return out;
 }
 

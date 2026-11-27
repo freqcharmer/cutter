@@ -5,7 +5,10 @@
 //     x, y,          world position of the object's center (inches)
 //     sx, sy, rot,   scale (negative = mirrored) and rotation in degrees
 //     paths,         local geometry centered on (0,0): [{ pts, closed, el? }]
-//     text?, trace?  source settings for regenerating the geometry }
+//     text?, trace?  source settings for regenerating the geometry
+//     weld?          { sources: [objects] } for a weld that can be unwelded
+//     offset?        { src: [ids], dist, join, linked, stamp } for an offset (contour) }
+// The document also keeps `layers`: color → { name } for color layers.
 import { bbox, objMatrix, transformPaths, unionBox } from './geom.js';
 import { idbGet, idbSet } from './store.js';
 
@@ -21,6 +24,8 @@ export const localBox = (o) => bbox(o.paths) || { x: 0, y: 0, w: 0, h: 0, x1: 0,
 export class Doc {
   constructor() {
     this.objects = [];
+    this.layers = {};
+    this.beforeCommit = null; // called before each undo step is recorded (keeps linked offsets in sync)
     this.selection = new Set();
     this.undoStack = [];
     this.redoStack = [];
@@ -33,12 +38,13 @@ export class Doc {
   on(fn) { this.listeners.add(fn); }
   emit(reason) { for (const fn of this.listeners) fn(reason); }
 
-  serialize() { return JSON.stringify({ app: 'FantastiCut', version: 1, objects: this.objects }); }
+  serialize() { return JSON.stringify({ app: 'FantastiCut', version: 2, objects: this.objects, layers: this.layers }); }
 
   load(json, { resetHistory = true } = {}) {
     const data = typeof json === 'string' ? JSON.parse(json) : json;
     if (!data || !Array.isArray(data.objects)) throw new Error('Not a FantastiCut file.');
     this.objects = data.objects;
+    this.layers = data.layers || {};
     this.selection.clear();
     if (resetHistory) { this.undoStack = []; this.redoStack = []; }
     this.snapshot = this.serialize();
@@ -47,6 +53,7 @@ export class Doc {
 
   /** Records the current state as one undo step. Call after every finished change. */
   commit(label = 'Edit') {
+    if (this.beforeCommit) this.beforeCommit();
     const now = this.serialize();
     if (now === this.snapshot) { this.emit('change'); return; }
     this.undoStack.push({ label, state: this.snapshot });
@@ -72,7 +79,9 @@ export class Doc {
     return step.label;
   }
   restore(state) {
-    this.objects = JSON.parse(state).objects;
+    const data = JSON.parse(state);
+    this.objects = data.objects;
+    this.layers = data.layers || {};
     this.snapshot = state;
     for (const id of [...this.selection]) if (!this.get(id)) this.selection.delete(id);
     this.scheduleSave();

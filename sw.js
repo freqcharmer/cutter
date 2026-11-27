@@ -1,11 +1,11 @@
 // Offline support: every file is fetched fresh when online and served from cache when offline.
-const CACHE = 'fantasticut-v1';
+const CACHE = 'fantasticut-v2';
 const CORE = [
   './', 'index.html', 'app.css', 'styles.css', 'manifest.webmanifest', 'terms.html', 'privacy.html',
   'assets/logo-mark.svg', 'assets/icon-192.png', 'assets/icon-512.png',
-  'src/app.js', 'src/doc.js', 'src/geom.js', 'src/hpgl.js', 'src/import-dxf.js', 'src/import-image.js',
+  'src/app.js', 'src/clip.js', 'src/doc.js', 'src/geom.js', 'src/hpgl.js', 'src/import-dxf.js', 'src/import-image.js',
   'src/import-svg.js', 'src/job.js', 'src/presets.js', 'src/serial.js', 'src/store.js', 'src/text.js', 'src/view.js',
-  'vendor/dxf-parser.mjs', 'vendor/imagetracer.mjs', 'vendor/opentype.mjs', 'vendor/svgpath.mjs',
+  'vendor/clipper2.mjs', 'vendor/dxf-parser.mjs', 'vendor/imagetracer.mjs', 'vendor/opentype.mjs', 'vendor/svgpath.mjs',
   'fonts/bebas-neue.woff', 'fonts/oswald-bold.woff', 'fonts/pacifico.woff', 'fonts/space-grotesk-bold.woff',
 ];
 

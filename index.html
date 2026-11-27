@@ -74,7 +74,7 @@
         </div>
         <div class="grid2">
           <label>Rotate&deg;<input id="in-rot" type="number" step="1"></label>
-          <div></div>
+          <label title="Color layer: each color can be cut on its own vinyl">Color<input id="in-color" type="color" value="#000000"></label>
         </div>
         <div class="btns">
           <button class="tb" id="b-fliph" title="Mirror left to right">Mirror &harr;</button>
@@ -82,8 +82,17 @@
           <button class="tb" id="b-dup" title="Duplicate (Ctrl+D)">Duplicate</button>
           <button class="tb" id="b-ungroup" title="Split into separate pieces">Ungroup</button>
           <button class="tb" id="b-front" title="Bring to front">To front</button>
+          <button class="tb" id="b-back" title="Send to back">To back</button>
           <button class="tb danger" id="b-del" title="Delete (Del)">Delete</button>
         </div>
+        <h3 class="sub">Arrange</h3>
+        <div class="btns">
+          <button class="tb" id="b-weld" title="Join overlapping shapes into one outline so the blade never cuts through an overlap">Weld</button>
+          <button class="tb" id="b-unweld" title="Split a weld back into the pieces it was made from">Unweld</button>
+          <button class="tb" id="b-offset" title="Add a border around the selection (or a shape inside it)">Offset</button>
+          <button class="tb" id="b-repeat" title="Make rows and columns of copies">Step and repeat</button>
+        </div>
+        <p class="hint">Right-click (or press and hold) anything for more.</p>
         <div class="btns" id="align-row">
           <button class="tb" data-align="left" title="Align left edges">Align left</button>
           <button class="tb" data-align="top" title="Align top edges">Align top</button>
@@ -109,7 +118,21 @@
           <label>Line spacing<input id="t-line" type="number" step="0.05" min="0.5"></label>
           <label>Align<select id="t-align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
         </div>
-        <p class="hint" id="t-script-hint" hidden>Script fonts overlap from letter to letter. Weld (coming in Phase 2) joins them into one piece; until then, the letters cut through each other where they touch.</p>
+        <div class="row">
+          <label class="check" title="Join letters that touch or overlap into one outline"><input id="t-weld" type="checkbox"> Weld letters</label>
+        </div>
+        <p class="hint" id="t-script-hint" hidden>Script fonts overlap from letter to letter. Keep Weld letters on so the word cuts as one piece.</p>
+      </section>
+
+      <section class="panel" id="p-offset" hidden>
+        <h2>Offset</h2>
+        <div class="grid2">
+          <label>Distance<input id="of-dist" type="number" step="0.01" min="0.005"></label>
+          <label>Direction<select id="of-dir"><option value="out">Outside</option><option value="in">Inside</option></select></label>
+          <label>Corners<select id="of-join"><option value="round">Round</option><option value="sharp">Sharp</option><option value="bevel">Beveled</option></select></label>
+          <div class="end"><button class="tb" id="of-unlink" title="Make this a plain shape that no longer follows the original">Unlink</button></div>
+        </div>
+        <p class="hint" id="of-status"></p>
       </section>
 
       <section class="panel" id="p-trace" hidden>
@@ -122,6 +145,12 @@
           <label class="check"><input id="tr-show" type="checkbox"> Show photo</label>
         </div>
         <p class="hint">Darker pixels than the threshold become cut lines. A sharp, high-resolution logo traces best.</p>
+      </section>
+
+      <section class="panel" id="p-colors">
+        <h2>Color layers</h2>
+        <ul class="layers clayers" id="clayers"></ul>
+        <p class="hint">Click a layer to select everything in it. Change the swatch to recolor the layer. In the Cut window, "One color at a time" cuts each layer on its own vinyl.</p>
       </section>
 
       <section class="panel" id="p-layers">
@@ -166,13 +195,41 @@
           <label class="check"><input id="c-selonly" type="checkbox"> Cut selected objects only</label>
           <label class="check"><input id="c-atblade" type="checkbox"> Start at the blade position (saves vinyl)</label>
         </div>
+        <details class="opt" id="c-layers-box">
+          <summary>Color layers</summary>
+          <ul class="checklist" id="c-layers"></ul>
+          <label class="check"><input id="c-bycolor" type="checkbox"> One color at a time (pause to load each vinyl)</label>
+          <label class="check"><input id="c-reg" type="checkbox"> Add registration marks (crosses at the corners, for lining layers up)</label>
+        </details>
+        <details class="opt">
+          <summary>Weeding</summary>
+          <label class="check"><input id="c-border" type="checkbox"> Weed border around the design</label>
+          <div class="grid2">
+            <label>Border margin<input id="c-wmargin" type="number" min="0" step="0.05"></label>
+            <label>Weed lines<select id="c-wlines"><option value="none">None</option><option value="h">Across</option><option value="v">Along</option><option value="both">Both</option></select></label>
+            <label>Line spacing<input id="c-wspace" type="number" min="0.25" step="0.25"></label>
+            <label title="Weed lines stop this far from the design">Gap to design<input id="c-wgap" type="number" min="0.02" step="0.02"></label>
+          </div>
+        </details>
+        <details class="opt">
+          <summary>Tiling (designs wider than the roll)</summary>
+          <label class="check"><input id="c-tile" type="checkbox"> Cut in panels</label>
+          <div class="grid2">
+            <label title="Blank = fit the cutting width">Panel width (across)<input id="c-panelw" type="number" min="1" step="0.5" placeholder="Fit"></label>
+            <label>Overlap<input id="c-overlap" type="number" min="0" step="0.125"></label>
+            <label title="Blank = no limit. Splits long designs into shorter pieces you can handle.">Panel length (along)<input id="c-panell" type="number" min="1" step="1" placeholder="No limit"></label>
+          </div>
+          <p class="hint">Each panel gets a number and alignment crosses in the overlap, so the pieces line up when you apply them.</p>
+        </details>
         <div class="btns">
           <button class="tb" id="c-edit-presets">Edit materials</button>
           <button class="tb" id="c-save-preset" title="Save these numbers into the selected material">Save to material</button>
         </div>
       </div>
       <div class="cut-right">
+        <ol class="steps" id="c-steps" hidden></ol>
         <canvas id="c-preview" width="480" height="300" aria-label="Cut preview"></canvas>
+        <p class="legend"><span class="k design"></span>Design <span class="k weed"></span>Weeding <span class="k mark"></span>Marks <span class="k travel"></span>Travel</p>
         <dl class="facts" id="c-stats"></dl>
         <ul class="warn" id="c-warn"></ul>
       </div>
@@ -246,12 +303,33 @@
       <tr><td>Wheel / pinch</td><td>Zoom</td></tr>
       <tr><td>T</td><td>Add text</td></tr>
       <tr><td>Ctrl+Enter</td><td>Cut</td></tr>
+      <tr><td>Right-click, or press and hold</td><td>Menu: weld, unweld, offset, step and repeat, and more</td></tr>
+      <tr><td>Ctrl+G / Ctrl+Shift+G</td><td>Weld / Unweld</td></tr>
     </table>
     <h3>From EMFDPRODCO</h3>
     <p><a href="https://emfdprodco.com/" target="_blank" rel="noopener">EMFDPRODCO.com</a> &middot; Hosted by <a href="https://ghostilla.com/" target="_blank" rel="noopener">gHostilla</a></p>
     <h3>Open source inside</h3>
-    <p class="hint">opentype.js (MIT), ImageTracer.js (Unlicense), dxf-parser (MIT), svgpath (MIT). Fonts: Bebas Neue, Oswald, Space Grotesk, Pacifico (SIL Open Font License).</p>
+    <p class="hint">opentype.js (MIT), ImageTracer.js (Unlicense), dxf-parser (MIT), svgpath (MIT), Clipper2 (clipper2-ts, Boost Software License). Fonts: Bebas Neue, Oswald, Space Grotesk, Pacifico (SIL Open Font License).</p>
     <p class="hint"><a href="terms.html">Terms</a> &middot; <a href="privacy.html">Privacy</a></p>
+  </dialog>
+
+  <div class="ctx" id="ctx" role="menu" hidden></div>
+
+  <!-- Step and repeat -->
+  <dialog id="dlg-repeat" class="dlg">
+    <form method="dialog" class="dlg-head"><h2>Step and repeat</h2><button class="tb icon" value="close" aria-label="Close">&times;</button></form>
+    <p class="hint">Copies the selection into rows (across the roll) and columns (along the roll).</p>
+    <div class="grid3">
+      <label>Rows (across the roll)<input id="r-rows" type="number" min="1" max="200" value="2"></label>
+      <label>Columns (along the roll)<input id="r-cols" type="number" min="1" max="500" value="2"></label>
+      <label>Gap between copies<input id="r-gap" type="number" min="0" step="0.05"></label>
+    </div>
+    <div class="row col">
+      <label class="check"><input id="r-fill" type="checkbox"> Fill the roll width (as many rows as fit)</label>
+      <label class="check"><input id="r-weed" type="checkbox"> Add weed lines between copies</label>
+    </div>
+    <dl class="facts" id="r-facts"></dl>
+    <div class="dlg-foot"><span class="spacer"></span><button class="tb" id="r-cancel">Cancel</button><button class="cutbtn" id="r-ok">Make copies</button></div>
   </dialog>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
